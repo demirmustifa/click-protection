@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request, render_template, send_file
 from datetime import datetime, timedelta
 import logging
 import json
-from collections import deque, Counter
+from collections import deque, Counter, defaultdict
 import threading
 import time
 import requests
@@ -16,8 +16,10 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 import geoip2.database
 from geoip2.errors import AddressNotFoundError
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 # E-posta yapılandırması
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -80,8 +82,9 @@ class ClickFraudDetector:
         self.suspicious_activities = deque(maxlen=50)
         self.sessions = {}
         self.admin_email = os.getenv('ADMIN_EMAIL')
-        self.location_data = []  # Konum verilerini saklamak için
-        self.country_stats = Counter()  # Ülke istatistikleri için
+        self.location_data = []
+        self.country_stats = Counter()
+        self.seen_ips = defaultdict(set)  # IP'lerin hangi kampanyalara tıkladığını tutacak
         
         # GeoLite2 veritabanını yükle
         try:
@@ -89,6 +92,15 @@ class ClickFraudDetector:
         except FileNotFoundError:
             self.geoip_reader = None
             logger.error("GeoLite2 veritabanı bulunamadı")
+    
+    def should_show_ad(self, ip, campaign_id):
+        """IP'nin bu kampanyayı daha önce görüp görmediğini kontrol et"""
+        return campaign_id not in self.seen_ips[ip]
+    
+    def record_ad_view(self, ip, campaign_id):
+        """IP'nin kampanyayı gördüğünü kaydet"""
+        self.seen_ips[ip].add(campaign_id)
+        return True
     
     def get_location_from_ip(self, ip):
         """IP adresinden konum bilgisi alma"""
@@ -137,36 +149,44 @@ class ClickFraudDetector:
         try:
             current_time = datetime.now()
             ip = click_data.get('ip', 'unknown')
+            campaign_id = click_data.get('campaign_id', 'unknown')
             
-            # Konum bilgisini al
+            # Bu IP bu kampanyayı daha önce görmüş mü kontrol et
+            if not self.should_show_ad(ip, campaign_id):
+                logger.info(f"IP {ip} daha önce kampanya {campaign_id}'yi görmüş, reklam gösterilmeyecek")
+                return {
+                    'success': False,
+                    'show_ad': False,
+                    'reason': 'IP daha önce bu reklamı görmüş'
+                }
+            
+            # IP'nin bu kampanyayı gördüğünü kaydet
+            self.record_ad_view(ip, campaign_id)
+            
+            # Mevcut tıklama işlemleri...
             location = self.get_location_from_ip(ip)
             click_data['location'] = location
             
-            # Ülke istatistiklerini güncelle
             if location['country'] != 'Unknown':
                 self.country_stats[location['country']] += 1
             
-            # Risk skorunu hesapla
             risk_score = 0
             if location['country'] in ['Unknown', None]:
-                risk_score += 50  # Bilinmeyen ülke riski
+                risk_score += 50
             
-            # Yüksek riskli ülkeler listesi (örnek)
-            high_risk_countries = ['CountryA', 'CountryB']  # Gerçek ülke listesi eklenebilir
+            high_risk_countries = ['CountryA', 'CountryB']
             if location['country'] in high_risk_countries:
                 risk_score += 30
             
             location['risk_score'] = risk_score
             
-            # Konum verilerini sakla
             self.location_data.append({
                 'timestamp': current_time,
                 'location': location,
                 'risk_score': risk_score
             })
             
-            # Mevcut tıklama kaydı işlemleri
-            session_key = f"{ip}_{click_data.get('campaign_id', 'unknown')}"
+            session_key = f"{ip}_{campaign_id}"
             
             if session_key not in self.sessions:
                 self.sessions[session_key] = {
@@ -178,12 +198,11 @@ class ClickFraudDetector:
             
             session = self.sessions[session_key]
             
-            # Hızlı çıkış kontrolü
             if 'last_click' in session:
                 time_diff = (current_time - session['last_click']).total_seconds()
                 if time_diff < 3:
                     session['quick_exits'] += 1
-                    risk_score += 20  # Hızlı çıkış riski
+                    risk_score += 20
                     if session['quick_exits'] >= 5:
                         self._record_suspicious(click_data, "Çok sayıda hızlı çıkış")
                         self.send_alert_email(
@@ -191,9 +210,8 @@ class ClickFraudDetector:
                             f"IP: {ip}\nÜlke: {location['country']}\nŞehir: {location['city']}\nNeden: Çok sayıda hızlı çıkış\nZaman: {current_time}"
                         )
             
-            # Bot kontrolü
             if self._is_bot(click_data.get('user_agent', '')):
-                risk_score += 40  # Bot riski
+                risk_score += 40
                 self._record_suspicious(click_data, "Bot aktivitesi")
                 self.send_alert_email(
                     "Bot Aktivitesi Tespit Edildi",
@@ -207,11 +225,19 @@ class ClickFraudDetector:
             click_data['risk_score'] = risk_score
             self.clicks.append(click_data)
             
-            return True
+            return {
+                'success': True,
+                'show_ad': True,
+                'risk_score': risk_score
+            }
             
         except Exception as e:
             logger.error(f"Tıklama kaydı hatası: {str(e)}")
-            return False
+            return {
+                'success': False,
+                'show_ad': False,
+                'reason': 'Sistem hatası'
+            }
     
     def _is_bot(self, user_agent):
         """Basit bot kontrolü"""
@@ -335,10 +361,30 @@ detector = ClickFraudDetector()
 def dashboard():
     return render_template('dashboard.html')
 
+@app.route('/check-ad-visibility', methods=['POST'])
+def check_ad_visibility():
+    """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
+    data = request.json
+    ip = data.get('ip', request.remote_addr)
+    campaign_id = data.get('campaign_id')
+    
+    if not campaign_id:
+        return jsonify({
+            'show_ad': False,
+            'reason': 'Kampanya ID gerekli'
+        }), 400
+    
+    should_show = detector.should_show_ad(ip, campaign_id)
+    return jsonify({
+        'show_ad': should_show,
+        'reason': 'İlk kez gösteriliyor' if should_show else 'Daha önce gösterildi'
+    })
+
 @app.route('/record-click', methods=['POST'])
 def record_click():
-    success = detector.record_click(request.json)
-    return jsonify({'success': success})
+    """Tıklama kaydı ve reklam gösterim kontrolü"""
+    result = detector.record_click(request.json)
+    return jsonify(result)
 
 @app.route('/api/stats')
 def get_stats():
