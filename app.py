@@ -364,21 +364,41 @@ def dashboard():
 @app.route('/check-ad-visibility', methods=['POST'])
 def check_ad_visibility():
     """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
-    data = request.json
-    ip = data.get('ip', request.remote_addr)
-    campaign_id = data.get('campaign_id')
-    
-    if not campaign_id:
+    try:
+        data = request.json
+        ip = request.remote_addr
+        campaign_id = data.get('campaign_id')
+        
+        if not campaign_id:
+            return jsonify({
+                'show_ad': False,
+                'reason': 'Kampanya ID gerekli'
+            }), 400
+        
+        # IP'nin bu kampanyayı kaç kez gördüğünü kontrol et
+        click_count = len(detector.seen_ips.get(ip, set()))
+        
+        if click_count >= 2:  # 2'den fazla görüntülemede engelle
+            return jsonify({
+                'show_ad': False,
+                'reason': 'IP limiti aşıldı',
+                'click_count': click_count
+            })
+        
+        # IP'nin kampanya görüntülemesini kaydet
+        detector.record_ad_view(ip, campaign_id)
+        
         return jsonify({
-            'show_ad': False,
-            'reason': 'Kampanya ID gerekli'
-        }), 400
-    
-    should_show = detector.should_show_ad(ip, campaign_id)
-    return jsonify({
-        'show_ad': should_show,
-        'reason': 'İlk kez gösteriliyor' if should_show else 'Daha önce gösterildi'
-    })
+            'show_ad': True,
+            'reason': 'İlk kez gösteriliyor',
+            'click_count': click_count + 1
+        })
+    except Exception as e:
+        logger.error(f"Kontrol hatası: {str(e)}")
+        return jsonify({
+            'show_ad': True,
+            'reason': 'Hata durumunda göster'
+        })
 
 @app.route('/record-click', methods=['POST'])
 def record_click():
