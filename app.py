@@ -365,15 +365,7 @@ def dashboard():
 def check_ad_visibility():
     """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
     try:
-        data = request.json
         ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
-        campaign_id = data.get('campaign_id')
-        
-        if not campaign_id:
-            return jsonify({
-                'show_ad': False,
-                'reason': 'Kampanya ID gerekli'
-            }), 400
         
         # IP'nin konum bilgilerini al ve kaydet
         location = detector.get_location_from_ip(ip)
@@ -386,9 +378,9 @@ def check_ad_visibility():
         if location['country'] != 'Unknown':
             detector.country_stats[location['country']] += 1
         
-        # IP'nin bu kampanyayı kaç kez gördüğünü kontrol et
+        # IP'nin görüntüleme sayısını kontrol et
         if ip not in detector.seen_ips:
-            detector.seen_ips[ip] = set()
+            detector.seen_ips[ip] = set(['first_view'])
             click_count = 0
         else:
             click_count = len(detector.seen_ips[ip])
@@ -401,8 +393,8 @@ def check_ad_visibility():
                 'click_count': click_count
             })
         
-        # IP'nin kampanya görüntülemesini kaydet
-        detector.seen_ips[ip].add(campaign_id)
+        # IP'nin görüntüleme sayısını artır
+        detector.seen_ips[ip].add(f'view_{click_count + 1}')
         
         return jsonify({
             'show_ad': True,
