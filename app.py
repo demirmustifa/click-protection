@@ -7,8 +7,26 @@ import json
 from collections import deque
 import threading
 import time
+import requests
 
 app = Flask(__name__)
+
+def keep_alive():
+    """Sistemi uyanık tutmak için her 14 dakikada bir self-ping gönderir"""
+    while True:
+        try:
+            # Render.com'daki uygulama URL'si
+            url = "https://click-protection.onrender.com"
+            response = requests.get(url)
+            app.logger.info(f"Self-ping başarılı - Status: {response.status_code}")
+        except Exception as e:
+            app.logger.error(f"Self-ping hatası: {str(e)}")
+        time.sleep(840)  # 14 dakika bekle
+
+# Self-ping thread'ini başlat
+keep_alive_thread = threading.Thread(target=keep_alive)
+keep_alive_thread.daemon = True
+keep_alive_thread.start()
 
 class ClickFraudDetector:
     def __init__(self):
