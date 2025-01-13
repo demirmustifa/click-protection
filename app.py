@@ -21,8 +21,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global değişkenler
-ping_thread = None
-should_run = True
+last_activity_time = datetime.now()
+INACTIVITY_THRESHOLD = 600  # 10 dakika
+
+@app.before_request
+def before_request():
+    """Her istekte son aktivite zamanını güncelle"""
+    global last_activity_time
+    last_activity_time = datetime.now()
 
 def signal_handler(signum, frame):
     """Sinyal yakalayıcı"""
@@ -35,38 +41,37 @@ signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 def keep_alive():
-    """Basit ping servisi"""
-    retry_delay = 30  # Başlangıç bekleme süresi (saniye)
-    max_retry_delay = 300  # Maksimum bekleme süresi (5 dakika)
+    """Basit ping servisi - sadece inaktif durumlarda çalışır"""
+    global last_activity_time
     
     while True:
         try:
-            # Önce root endpoint'i dene
-            response = requests.get(
-                "https://click-protection.onrender.com/",
-                timeout=10,
-                headers={'User-Agent': 'ClickProtection-HealthCheck/1.0'}
-            )
+            current_time = datetime.now()
+            inactive_duration = (current_time - last_activity_time).total_seconds()
             
-            if response.status_code == 200:
-                logger.info("Ping başarılı - Ana sayfa erişilebilir")
-                retry_delay = 30  # Başarılı olunca bekleme süresini sıfırla
-            else:
-                logger.warning(f"Ping yanıtı beklenmeyen durum kodu: {response.status_code}")
-                retry_delay = min(retry_delay * 2, max_retry_delay)
-                
+            # Sadece 10 dakika inaktif kaldıysa ping at
+            if inactive_duration >= INACTIVITY_THRESHOLD:
+                response = requests.head(
+                    "https://click-protection.onrender.com/",
+                    timeout=5,
+                    headers={'User-Agent': 'ClickProtection-Ping/1.0'}
+                )
+                logger.info(f"İnaktif ping gönderildi - Status: {response.status_code}")
+                last_activity_time = current_time
+            
+            # Her 30 saniyede bir kontrol et
+            time.sleep(30)
+            
         except Exception as e:
             logger.error(f"Ping hatası: {str(e)}")
-            retry_delay = min(retry_delay * 2, max_retry_delay)
-        
-        time.sleep(retry_delay)
+            time.sleep(60)  # Hata durumunda 1 dakika bekle
 
 # Ping servisini başlat
 if os.environ.get('RENDER') == 'true':
     try:
         ping_thread = threading.Thread(target=keep_alive, daemon=True)
         ping_thread.start()
-        logger.info("Ping servisi başarıyla başlatıldı")
+        logger.info("Akıllı ping servisi başlatıldı")
     except Exception as e:
         logger.error(f"Ping servisi başlatılırken hata: {str(e)}")
 
