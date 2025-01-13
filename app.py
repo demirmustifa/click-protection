@@ -36,23 +36,39 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def keep_alive():
     """Basit ping servisi"""
+    retry_delay = 30  # Başlangıç bekleme süresi (saniye)
+    max_retry_delay = 300  # Maksimum bekleme süresi (5 dakika)
+    
     while True:
         try:
+            # Önce root endpoint'i dene
             response = requests.get(
-                "https://click-protection.onrender.com/api/stats",
-                timeout=5
+                "https://click-protection.onrender.com/",
+                timeout=10,
+                headers={'User-Agent': 'ClickProtection-HealthCheck/1.0'}
             )
-            logger.info(f"Ping durumu: {response.status_code}")
+            
+            if response.status_code == 200:
+                logger.info("Ping başarılı - Ana sayfa erişilebilir")
+                retry_delay = 30  # Başarılı olunca bekleme süresini sıfırla
+            else:
+                logger.warning(f"Ping yanıtı beklenmeyen durum kodu: {response.status_code}")
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+                
         except Exception as e:
             logger.error(f"Ping hatası: {str(e)}")
+            retry_delay = min(retry_delay * 2, max_retry_delay)
         
-        time.sleep(180)  # 3 dakika bekle
+        time.sleep(retry_delay)
 
 # Ping servisini başlat
 if os.environ.get('RENDER') == 'true':
-    ping_thread = threading.Thread(target=keep_alive, daemon=True)
-    ping_thread.start()
-    logger.info("Ping servisi başlatıldı")
+    try:
+        ping_thread = threading.Thread(target=keep_alive, daemon=True)
+        ping_thread.start()
+        logger.info("Ping servisi başarıyla başlatıldı")
+    except Exception as e:
+        logger.error(f"Ping servisi başlatılırken hata: {str(e)}")
 
 class ClickFraudDetector:
     def __init__(self):
