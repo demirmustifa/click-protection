@@ -3,167 +3,179 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tıklama Koruma Sistemi</title>
+    <title>Tıklama Koruma Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        .risk-high { color: #dc3545; }
-        .risk-medium { color: #ffc107; }
-        .risk-low { color: #28a745; }
-        .quick-exit-card {
-            border-left: 4px solid;
-            margin-bottom: 10px;
+        #map {
+            height: 400px;
+            width: 100%;
+            margin-bottom: 20px;
         }
-        .quick-exit-high { border-left-color: #dc3545; }
-        .quick-exit-medium { border-left-color: #ffc107; }
-        .quick-exit-low { border-left-color: #28a745; }
+        .stats-card {
+            margin-bottom: 20px;
+        }
+        .risk-high {
+            color: #dc3545;
+        }
+        .risk-medium {
+            color: #ffc107;
+        }
+        .risk-low {
+            color: #28a745;
+        }
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <span class="navbar-brand mb-0 h1">Tıklama Koruma Sistemi</span>
-        </div>
-    </nav>
-
     <div class="container mt-4">
+        <h1 class="mb-4">Tıklama Koruma Dashboard</h1>
+        
+        <!-- Harita -->
+        <div class="card stats-card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Coğrafi Konum Analizi</h5>
+            </div>
+            <div class="card-body">
+                <div id="map"></div>
+            </div>
+        </div>
+
         <div class="row">
-            <!-- İstatistik Kartları -->
-            <div class="col-md-3">
-                <div class="card">
+            <!-- Ülke İstatistikleri -->
+            <div class="col-md-6">
+                <div class="card stats-card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">Ülke İstatistikleri</h5>
+                    </div>
                     <div class="card-body">
-                        <h5 class="card-title">Toplam Tıklama</h5>
-                        <p class="card-text" id="total-clicks">0</p>
+                        <div id="countryStats"></div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-3">
-                <div class="card">
-                    <div class="card-body">
-                        <h5 class="card-title">Şüpheli Tıklama</h5>
-                        <p class="card-text" id="suspicious-clicks">0</p>
+
+            <!-- Risk Analizi -->
+            <div class="col-md-6">
+                <div class="card stats-card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">Risk Analizi</h5>
                     </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card">
                     <div class="card-body">
-                        <h5 class="card-title">Hızlı Çıkışlar</h5>
-                        <p class="card-text" id="quick-exits">0</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card">
-                    <div class="card-body">
-                        <h5 class="card-title">Şüpheli Oturumlar</h5>
-                        <p class="card-text" id="suspicious-sessions">0</p>
+                        <div id="riskStats"></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="row mt-4">
-            <!-- Hızlı Çıkış Raporu -->
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">Hızlı Çıkış Raporu</h5>
-                    </div>
-                    <div class="card-body">
-                        <div id="quick-exit-list" class="overflow-auto" style="max-height: 400px;">
-                            <!-- Hızlı çıkış kayıtları buraya eklenecek -->
-                        </div>
-                    </div>
-                </div>
+        <!-- Genel İstatistikler -->
+        <div class="card stats-card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Genel İstatistikler</h5>
             </div>
+            <div class="card-body">
+                <div id="generalStats"></div>
+            </div>
+        </div>
 
-            <!-- Şüpheli Aktiviteler -->
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">Son Şüpheli Aktiviteler</h5>
-                    </div>
-                    <div class="card-body">
-                        <div id="suspicious-list" class="overflow-auto" style="max-height: 400px;">
-                            <!-- Şüpheli aktiviteler buraya eklenecek -->
-                        </div>
-                    </div>
-                </div>
+        <!-- Raporlar -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Raporlar</h5>
+            </div>
+            <div class="card-body">
+                <a href="/download-excel" class="btn btn-primary me-2">Excel Raporu İndir</a>
+                <a href="/download-pdf" class="btn btn-secondary">PDF Raporu İndir</a>
             </div>
         </div>
     </div>
 
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        function updateDashboard() {
-            // İstatistikleri güncelle
-            fetch('/api/stats')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('total-clicks').textContent = data.total_clicks;
-                    document.getElementById('suspicious-clicks').textContent = data.suspicious_clicks;
-                    document.getElementById('quick-exits').textContent = data.quick_exit_total;
-                    document.getElementById('suspicious-sessions').textContent = data.suspicious_sessions;
-                });
+        // Harita başlatma
+        var map = L.map('map').setView([0, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
 
-            // Hızlı çıkış raporunu güncelle
-            fetch('/api/quick-exit-report')
-                .then(response => response.json())
-                .then(data => {
-                    const container = document.getElementById('quick-exit-list');
-                    container.innerHTML = '';
+        // Marker grupları
+        var markers = L.layerGroup().addTo(map);
+        var riskMarkers = L.layerGroup().addTo(map);
 
-                    data.detailed_sessions
-                        .sort((a, b) => b.quick_exit_rate - a.quick_exit_rate)
-                        .forEach(session => {
-                            const riskClass = session.risk_level === 'Yüksek' ? 'quick-exit-high' :
-                                            session.risk_level === 'Orta' ? 'quick-exit-medium' : 'quick-exit-low';
-                            
-                            const card = document.createElement('div');
-                            card.className = `card quick-exit-card ${riskClass}`;
-                            card.innerHTML = `
-                                <div class="card-body">
-                                    <h6 class="card-title">Oturum: ${session.session_id}</h6>
-                                    <p class="card-text">
-                                        Toplam Tıklama: ${session.total_clicks}<br>
-                                        Hızlı Çıkış: ${session.quick_exits}<br>
-                                        Risk Seviyesi: <span class="risk-${session.risk_level.toLowerCase()}">${session.risk_level}</span><br>
-                                        Son Aktivite: ${new Date(session.last_click).toLocaleString()}
-                                    </p>
-                                </div>
-                            `;
-                            container.appendChild(card);
-                        });
-                });
+        function updateMap(locations) {
+            markers.clearLayers();
+            riskMarkers.clearLayers();
 
-            // Şüpheli aktiviteleri güncelle
-            fetch('/api/suspicious-activities')
-                .then(response => response.json())
-                .then(data => {
-                    const container = document.getElementById('suspicious-list');
-                    container.innerHTML = '';
-
-                    data.forEach(activity => {
-                        const card = document.createElement('div');
-                        card.className = 'card mb-2';
-                        card.innerHTML = `
-                            <div class="card-body">
-                                <h6 class="card-title">${activity.reason}</h6>
-                                <p class="card-text">
-                                    IP: ${activity.ip}<br>
-                                    Zaman: ${new Date(activity.timestamp).toLocaleString()}<br>
-                                    ${activity.details ? `Detay: ${activity.details}<br>` : ''}
-                                </p>
-                            </div>
-                        `;
-                        container.appendChild(card);
+            locations.forEach(loc => {
+                if (loc.latitude && loc.longitude) {
+                    var color = loc.risk_score > 50 ? 'red' : 'blue';
+                    var marker = L.circleMarker([loc.latitude, loc.longitude], {
+                        radius: 8,
+                        fillColor: color,
+                        color: '#fff',
+                        weight: 1,
+                        opacity: 1,
+                        fillOpacity: 0.8
                     });
+
+                    marker.bindPopup(`
+                        <b>Ülke:</b> ${loc.country}<br>
+                        <b>Şehir:</b> ${loc.city}<br>
+                        <b>Risk Skoru:</b> ${loc.risk_score}
+                    `);
+
+                    if (loc.risk_score > 50) {
+                        riskMarkers.addLayer(marker);
+                    } else {
+                        markers.addLayer(marker);
+                    }
+                }
+            });
+        }
+
+        function updateCountryStats(stats) {
+            const countryStatsDiv = document.getElementById('countryStats');
+            let html = '<div class="table-responsive"><table class="table">';
+            html += '<thead><tr><th>Ülke</th><th>Tıklama Sayısı</th></tr></thead><tbody>';
+            
+            Object.entries(stats)
+                .sort((a, b) => b[1] - a[1])
+                .forEach(([country, count]) => {
+                    html += `<tr><td>${country}</td><td>${count}</td></tr>`;
+                });
+            
+            html += '</tbody></table></div>';
+            countryStatsDiv.innerHTML = html;
+        }
+
+        function updateRiskStats(locations) {
+            const riskStatsDiv = document.getElementById('riskStats');
+            const highRisk = locations.filter(loc => loc.risk_score > 50).length;
+            const mediumRisk = locations.filter(loc => loc.risk_score > 30 && loc.risk_score <= 50).length;
+            const lowRisk = locations.filter(loc => loc.risk_score <= 30).length;
+
+            riskStatsDiv.innerHTML = `
+                <div class="mb-3">
+                    <div class="risk-high">Yüksek Risk: ${highRisk}</div>
+                    <div class="risk-medium">Orta Risk: ${mediumRisk}</div>
+                    <div class="risk-low">Düşük Risk: ${lowRisk}</div>
+                </div>
+            `;
+        }
+
+        function fetchLocationStats() {
+            fetch('/api/location-stats')
+                .then(response => response.json())
+                .then(data => {
+                    updateMap(data.recent_locations);
+                    updateCountryStats(data.country_stats);
+                    updateRiskStats(data.recent_locations);
                 });
         }
 
-        // Sayfa yüklendiğinde ve her 30 saniyede bir güncelle
-        updateDashboard();
-        setInterval(updateDashboard, 30000);
+        // Her 30 saniyede bir güncelle
+        fetchLocationStats();
+        setInterval(fetchLocationStats, 30000);
     </script>
 </body>
+</html> 
 </html> 

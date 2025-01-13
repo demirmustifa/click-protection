@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request, render_template, send_file
 from datetime import datetime, timedelta
 import logging
 import json
-from collections import deque
+from collections import deque, Counter
 import threading
 import time
 import requests
@@ -14,6 +14,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+import geoip2.database
+from geoip2.errors import AddressNotFoundError
 
 app = Flask(__name__)
 
@@ -78,6 +80,43 @@ class ClickFraudDetector:
         self.suspicious_activities = deque(maxlen=50)
         self.sessions = {}
         self.admin_email = os.getenv('ADMIN_EMAIL')
+        self.location_data = []  # Konum verilerini saklamak için
+        self.country_stats = Counter()  # Ülke istatistikleri için
+        
+        # GeoLite2 veritabanını yükle
+        try:
+            self.geoip_reader = geoip2.database.Reader('GeoLite2-City.mmdb')
+        except FileNotFoundError:
+            self.geoip_reader = None
+            logger.error("GeoLite2 veritabanı bulunamadı")
+    
+    def get_location_from_ip(self, ip):
+        """IP adresinden konum bilgisi alma"""
+        try:
+            if self.geoip_reader and ip != 'unknown':
+                response = self.geoip_reader.city(ip)
+                location = {
+                    'ip': ip,
+                    'country': response.country.name,
+                    'city': response.city.name,
+                    'latitude': response.location.latitude,
+                    'longitude': response.location.longitude,
+                    'risk_score': 0  # Risk skoru başlangıçta 0
+                }
+                return location
+        except AddressNotFoundError:
+            logger.warning(f"IP adresi bulunamadı: {ip}")
+        except Exception as e:
+            logger.error(f"Konum tespiti hatası: {str(e)}")
+        
+        return {
+            'ip': ip,
+            'country': 'Unknown',
+            'city': 'Unknown',
+            'latitude': 0,
+            'longitude': 0,
+            'risk_score': 0
+        }
     
     def send_alert_email(self, subject, body):
         """Şüpheli aktivite e-posta bildirimi"""
@@ -94,45 +133,78 @@ class ClickFraudDetector:
             logger.error(f"Email sending error: {str(e)}")
     
     def record_click(self, click_data):
-        """Tıklama kaydı ve şüpheli durum tespiti"""
+        """Tıklama kaydı ve konum analizi"""
         try:
             current_time = datetime.now()
             ip = click_data.get('ip', 'unknown')
+            
+            # Konum bilgisini al
+            location = self.get_location_from_ip(ip)
+            click_data['location'] = location
+            
+            # Ülke istatistiklerini güncelle
+            if location['country'] != 'Unknown':
+                self.country_stats[location['country']] += 1
+            
+            # Risk skorunu hesapla
+            risk_score = 0
+            if location['country'] in ['Unknown', None]:
+                risk_score += 50  # Bilinmeyen ülke riski
+            
+            # Yüksek riskli ülkeler listesi (örnek)
+            high_risk_countries = ['CountryA', 'CountryB']  # Gerçek ülke listesi eklenebilir
+            if location['country'] in high_risk_countries:
+                risk_score += 30
+            
+            location['risk_score'] = risk_score
+            
+            # Konum verilerini sakla
+            self.location_data.append({
+                'timestamp': current_time,
+                'location': location,
+                'risk_score': risk_score
+            })
+            
+            # Mevcut tıklama kaydı işlemleri
             session_key = f"{ip}_{click_data.get('campaign_id', 'unknown')}"
             
             if session_key not in self.sessions:
                 self.sessions[session_key] = {
                     'first_click': current_time,
                     'click_count': 0,
-                    'quick_exits': 0
+                    'quick_exits': 0,
+                    'country': location['country']
                 }
             
             session = self.sessions[session_key]
             
-            # Hızlı çıkış kontrolü ve bildirimi
+            # Hızlı çıkış kontrolü
             if 'last_click' in session:
                 time_diff = (current_time - session['last_click']).total_seconds()
                 if time_diff < 3:
                     session['quick_exits'] += 1
+                    risk_score += 20  # Hızlı çıkış riski
                     if session['quick_exits'] >= 5:
                         self._record_suspicious(click_data, "Çok sayıda hızlı çıkış")
                         self.send_alert_email(
                             "Şüpheli Aktivite Tespit Edildi",
-                            f"IP: {ip}\nNeden: Çok sayıda hızlı çıkış\nZaman: {current_time}"
+                            f"IP: {ip}\nÜlke: {location['country']}\nŞehir: {location['city']}\nNeden: Çok sayıda hızlı çıkış\nZaman: {current_time}"
                         )
             
-            # Bot kontrolü ve bildirimi
+            # Bot kontrolü
             if self._is_bot(click_data.get('user_agent', '')):
+                risk_score += 40  # Bot riski
                 self._record_suspicious(click_data, "Bot aktivitesi")
                 self.send_alert_email(
                     "Bot Aktivitesi Tespit Edildi",
-                    f"IP: {ip}\nUser-Agent: {click_data.get('user_agent')}\nZaman: {current_time}"
+                    f"IP: {ip}\nÜlke: {location['country']}\nŞehir: {location['city']}\nUser-Agent: {click_data.get('user_agent')}\nZaman: {current_time}"
                 )
             
             session['last_click'] = current_time
             session['click_count'] = min(session['click_count'] + 1, 100)
             
             click_data['timestamp'] = current_time
+            click_data['risk_score'] = risk_score
             self.clicks.append(click_data)
             
             return True
@@ -224,6 +296,38 @@ class ClickFraudDetector:
         except Exception as e:
             logger.error(f"PDF rapor oluşturma hatası: {str(e)}")
             return None
+    
+    def get_location_stats(self):
+        """Konum istatistiklerini getir"""
+        try:
+            stats = {
+                'country_stats': dict(self.country_stats),
+                'recent_locations': [
+                    {
+                        'latitude': loc['location']['latitude'],
+                        'longitude': loc['location']['longitude'],
+                        'risk_score': loc['risk_score'],
+                        'country': loc['location']['country'],
+                        'city': loc['location']['city']
+                    }
+                    for loc in self.location_data[-100:]  # Son 100 konum
+                ],
+                'high_risk_locations': [
+                    {
+                        'latitude': loc['location']['latitude'],
+                        'longitude': loc['location']['longitude'],
+                        'risk_score': loc['risk_score'],
+                        'country': loc['location']['country'],
+                        'city': loc['location']['city']
+                    }
+                    for loc in self.location_data
+                    if loc['risk_score'] > 50  # Yüksek riskli lokasyonlar
+                ]
+            }
+            return stats
+        except Exception as e:
+            logger.error(f"Konum istatistikleri hatası: {str(e)}")
+            return {}
 
 detector = ClickFraudDetector()
 
@@ -247,6 +351,11 @@ def get_quick_exit_report():
 @app.route('/api/suspicious-activities')
 def get_suspicious_activities():
     return jsonify(list(detector.suspicious_activities))
+
+@app.route('/api/location-stats')
+def get_location_stats():
+    """Konum istatistiklerini döndür"""
+    return jsonify(detector.get_location_stats())
 
 @app.route('/download-excel')
 def download_excel():
