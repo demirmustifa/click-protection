@@ -375,6 +375,17 @@ def check_ad_visibility():
                 'reason': 'Kampanya ID gerekli'
             }), 400
         
+        # IP'nin konum bilgilerini al ve kaydet
+        location = detector.get_location_from_ip(ip)
+        detector.location_data.append({
+            'timestamp': datetime.now(),
+            'location': location,
+            'risk_score': 0
+        })
+        
+        if location['country'] != 'Unknown':
+            detector.country_stats[location['country']] += 1
+        
         # IP'nin bu kampanyayı kaç kez gördüğünü kontrol et
         click_count = len(detector.seen_ips[ip])
         
