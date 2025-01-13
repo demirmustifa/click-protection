@@ -8,25 +8,51 @@ from collections import deque
 import threading
 import time
 import requests
+import os
+import signal
 
 app = Flask(__name__)
 
+# Loglama ayarlarını yapılandır
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Global değişkenler
+ping_thread = None
+should_run = True
+
+def signal_handler(signum, frame):
+    """Sinyal yakalayıcı"""
+    global should_run
+    logger.info(f"Sinyal alındı: {signum}")
+    should_run = False
+
+# Sinyalleri yakala
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
 def keep_alive():
-    """Sistemi uyanık tutmak için her 14 dakikada bir self-ping gönderir"""
+    """Basit ping servisi"""
     while True:
         try:
-            # Render.com'daki uygulama URL'si
-            url = "https://click-protection.onrender.com"
-            response = requests.get(url)
-            app.logger.info(f"Self-ping başarılı - Status: {response.status_code}")
+            response = requests.get(
+                "https://click-protection.onrender.com/api/stats",
+                timeout=5
+            )
+            logger.info(f"Ping durumu: {response.status_code}")
         except Exception as e:
-            app.logger.error(f"Self-ping hatası: {str(e)}")
-        time.sleep(840)  # 14 dakika bekle
+            logger.error(f"Ping hatası: {str(e)}")
+        
+        time.sleep(180)  # 3 dakika bekle
 
-# Self-ping thread'ini başlat
-keep_alive_thread = threading.Thread(target=keep_alive)
-keep_alive_thread.daemon = True
-keep_alive_thread.start()
+# Ping servisini başlat
+if os.environ.get('RENDER') == 'true':
+    ping_thread = threading.Thread(target=keep_alive, daemon=True)
+    ping_thread.start()
+    logger.info("Ping servisi başlatıldı")
 
 class ClickFraudDetector:
     def __init__(self):
