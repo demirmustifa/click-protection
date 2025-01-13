@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: click-protection
+    env: python
+    buildCommand: |
+      pip install -r requirements.txt
+      curl -o GeoLite2-City.mmdb https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-City.mmdb
+    startCommand: gunicorn app:app 
