@@ -23,6 +23,41 @@ class ClickFraudDetector:
         self.training_thread.daemon = True
         self.training_thread.start()
 
+    def _periodic_training(self):
+        """Her saat başı modeli yeniden eğit"""
+        while True:
+            time.sleep(3600)  # 1 saat bekle
+            with self.lock:
+                if len(self.clicks) > 100:  # En az 100 tıklama varsa
+                    self._train_model()
+
+    def _train_model(self):
+        """Mevcut verilerle modeli eğit"""
+        if len(self.clicks) < 100:
+            return
+        
+        # Tıklama verilerinden özellikler çıkar
+        features = []
+        for click in self.clicks:
+            session_key = f"{click['ip']}_{click.get('campaign_id', 'unknown')}"
+            session = self.sessions.get(session_key, {})
+            
+            features.append([
+                session.get('click_count', 0),
+                session.get('quick_exits', 0),
+                (session.get('quick_exits', 0) / session.get('click_count', 1)) if session.get('click_count', 0) > 0 else 0
+            ])
+        
+        # Modeli eğit
+        self.model = IsolationForest(contamination=0.1, random_state=42)
+        self.model.fit(features)
+
+    def _is_bot(self, user_agent):
+        """Kullanıcı ajanının bot olup olmadığını kontrol et"""
+        bot_patterns = ['bot', 'crawler', 'spider', 'headless']
+        user_agent = user_agent.lower()
+        return any(pattern in user_agent for pattern in bot_patterns)
+
     def record_click(self, click_data):
         with self.lock:
             current_time = datetime.now()
