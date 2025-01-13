@@ -366,7 +366,7 @@ def check_ad_visibility():
     """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
     try:
         data = request.json
-        ip = request.remote_addr
+        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
         campaign_id = data.get('campaign_id')
         
         if not campaign_id:
@@ -396,6 +396,7 @@ def check_ad_visibility():
         if click_count >= 2:  # 2'den fazla görüntülemede engelle
             return jsonify({
                 'show_ad': False,
+                'redirect': 'https://servisimonline.com/bot-saldirisi.html',
                 'reason': 'IP limiti aşıldı',
                 'click_count': click_count
             })
