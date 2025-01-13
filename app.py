@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 import logging
-from ip_checker import IPChecker
 import json
 from collections import deque
 import threading
@@ -11,168 +10,159 @@ import time
 
 app = Flask(__name__)
 
-# Loglama ayarları
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 class ClickFraudDetector:
     def __init__(self):
-        self.model = IsolationForest(contamination=0.1)
-        self.click_data = deque(maxlen=10000)  # Son 10000 tıklamayı tut
-        self.suspicious_activities = deque(maxlen=100)  # Son 100 şüpheli aktivite
-        self.ip_checker = IPChecker()
+        self.clicks = deque(maxlen=10000)  # Son 10000 tıklamayı sakla
+        self.suspicious_activities = deque(maxlen=100)  # Son 100 şüpheli aktiviteyi sakla
+        self.sessions = {}  # Oturum bilgilerini sakla
         self.lock = threading.Lock()
         
         # Periyodik model eğitimi için thread başlat
+        self.model = None
         self.training_thread = threading.Thread(target=self._periodic_training)
         self.training_thread.daemon = True
         self.training_thread.start()
-    
-    def _periodic_training(self):
-        """Periyodik olarak modeli yeniden eğit"""
-        while True:
-            time.sleep(3600)  # Her saat başı
-            with self.lock:
-                if len(self.click_data) > 100:
-                    self._train_model()
-    
-    def _train_model(self):
-        """Modeli mevcut verilerle eğit"""
-        if len(self.click_data) < 100:
-            return
-            
-        df = pd.DataFrame(list(self.click_data))
-        features = self._extract_features(df)
-        self.model.fit(features)
-    
-    def _extract_features(self, df):
-        """Özellik çıkarımı"""
-        # Zamansal özellikler
-        df['hour'] = df['timestamp'].apply(lambda x: x.hour)
-        df['minute'] = df['timestamp'].apply(lambda x: x.minute)
-        
-        # IP bazlı özellikler
-        ip_counts = df['ip'].value_counts()
-        df['ip_frequency'] = df['ip'].map(ip_counts)
-        
-        return df[['hour', 'minute', 'ip_frequency']]
-    
-    def record_click(self, click_info):
-        """Tıklama bilgilerini kaydet ve analiz et"""
-        click_data = {
-            'ip': click_info.get('ip'),
-            'timestamp': datetime.now(),
-            'user_agent': click_info.get('user_agent'),
-            'referrer': click_info.get('referrer'),
-            'campaign_id': click_info.get('campaign_id')
-        }
-        
+
+    def record_click(self, click_data):
         with self.lock:
-            self.click_data.append(click_data)
-            result = self.analyze_click(click_data)
+            current_time = datetime.now()
+            ip = click_data.get('ip', 'unknown')
             
-            if result['is_fraudulent']:
-                self.suspicious_activities.append({
-                    'ip': click_data['ip'],
-                    'timestamp': click_data['timestamp'].isoformat(),
-                    'reason': result['reason']
-                })
+            # Oturum kontrolü
+            session_key = f"{ip}_{click_data.get('campaign_id', 'unknown')}"
+            session = self.sessions.get(session_key, {
+                'first_click': current_time,
+                'last_click': current_time,
+                'click_count': 0,
+                'quick_exits': 0
+            })
             
-            return result
-    
-    def analyze_click(self, click_data):
-        """Tıklamanın şüpheli olup olmadığını analiz et"""
-        # IP kontrolü
-        ip_check = self.ip_checker.check_ip(click_data['ip'])
-        if ip_check['is_suspicious']:
-            return {'is_fraudulent': True, 'reason': f"Şüpheli IP (Güven Skoru: {ip_check['confidence_score']})"}
+            # Hızlı çıkış kontrolü (3 saniyeden az)
+            if session['click_count'] > 0:
+                time_diff = (current_time - session['last_click']).total_seconds()
+                if time_diff < 3:
+                    session['quick_exits'] += 1
+                    self._record_suspicious_activity(click_data, "Hızlı çıkış tespit edildi", time_diff)
+            
+            session['last_click'] = current_time
+            session['click_count'] += 1
+            self.sessions[session_key] = session
+            
+            # Tıklama verisini kaydet
+            click_data['timestamp'] = current_time
+            click_data['session_data'] = {
+                'quick_exits': session['quick_exits'],
+                'total_clicks': session['click_count']
+            }
+            self.clicks.append(click_data)
+            
+            # Şüpheli aktivite kontrolü
+            is_suspicious = self._analyze_click(click_data, session)
+            return not is_suspicious
+
+    def _analyze_click(self, click_data, session):
+        is_suspicious = False
+        
+        # Hızlı çıkış oranı kontrolü
+        if session['click_count'] > 5 and (session['quick_exits'] / session['click_count']) > 0.5:
+            self._record_suspicious_activity(
+                click_data,
+                "Yüksek hızlı çıkış oranı",
+                f"{session['quick_exits']}/{session['click_count']} tıklama"
+            )
+            is_suspicious = True
         
         # Bot kontrolü
-        if self._is_bot_user_agent(click_data['user_agent']):
-            return {'is_fraudulent': True, 'reason': 'Bot kullanıcı ajanı tespit edildi'}
+        if self._is_bot(click_data['user_agent']):
+            self._record_suspicious_activity(click_data, "Bot aktivitesi tespit edildi")
+            is_suspicious = True
         
-        # Anomali tespiti
-        if len(self.click_data) > 100:
-            features = self._extract_features(pd.DataFrame([click_data]))
-            prediction = self.model.predict(features)
-            if prediction[0] == -1:
-                return {'is_fraudulent': True, 'reason': 'Anormal tıklama davranışı'}
-        
-        return {'is_fraudulent': False, 'reason': 'Geçerli tıklama'}
-    
-    def _is_bot_user_agent(self, user_agent):
-        """Kullanıcı ajanının bot olup olmadığını kontrol et"""
-        suspicious_keywords = ['bot', 'crawler', 'spider', 'scraper']
-        return any(keyword in user_agent.lower() for keyword in suspicious_keywords)
-    
-    def get_stats(self):
-        """İstatistikleri getir"""
-        total_clicks = len(self.click_data)
-        suspicious_clicks = len(self.suspicious_activities)
-        
-        return {
-            'total_clicks': total_clicks,
-            'suspicious_clicks': suspicious_clicks,
-            'last_update': datetime.now().isoformat()
-        }
+        return is_suspicious
 
-# Global detector instance
+    def _record_suspicious_activity(self, click_data, reason, details=None):
+        suspicious_activity = {
+            'timestamp': datetime.now(),
+            'ip': click_data.get('ip', 'unknown'),
+            'reason': reason,
+            'details': details,
+            'campaign_id': click_data.get('campaign_id', 'unknown'),
+            'user_agent': click_data.get('user_agent', 'unknown')
+        }
+        self.suspicious_activities.append(suspicious_activity)
+
+    def get_quick_exit_report(self):
+        with self.lock:
+            report = {
+                'total_sessions': len(self.sessions),
+                'suspicious_sessions': 0,
+                'quick_exits_total': 0,
+                'detailed_sessions': []
+            }
+            
+            for session_key, session in self.sessions.items():
+                quick_exit_rate = session['quick_exits'] / session['click_count'] if session['click_count'] > 0 else 0
+                session_data = {
+                    'session_id': session_key,
+                    'total_clicks': session['click_count'],
+                    'quick_exits': session['quick_exits'],
+                    'quick_exit_rate': quick_exit_rate,
+                    'first_click': session['first_click'].isoformat(),
+                    'last_click': session['last_click'].isoformat(),
+                    'risk_level': self._calculate_risk_level(quick_exit_rate)
+                }
+                
+                if quick_exit_rate > 0.3:  # %30'dan fazla hızlı çıkış varsa şüpheli
+                    report['suspicious_sessions'] += 1
+                
+                report['quick_exits_total'] += session['quick_exits']
+                report['detailed_sessions'].append(session_data)
+            
+            return report
+
+    def _calculate_risk_level(self, quick_exit_rate):
+        if quick_exit_rate < 0.2:
+            return 'Düşük'
+        elif quick_exit_rate < 0.5:
+            return 'Orta'
+        else:
+            return 'Yüksek'
+
+    def get_stats(self):
+        with self.lock:
+            total_clicks = len(self.clicks)
+            suspicious_clicks = len(self.suspicious_activities)
+            quick_exit_report = self.get_quick_exit_report()
+            
+            return {
+                'total_clicks': total_clicks,
+                'suspicious_clicks': suspicious_clicks,
+                'quick_exit_total': quick_exit_report['quick_exits_total'],
+                'suspicious_sessions': quick_exit_report['suspicious_sessions']
+            }
+
 detector = ClickFraudDetector()
 
 @app.route('/')
 def dashboard():
-    """Dashboard sayfası"""
     return render_template('dashboard.html')
-
-@app.route('/api/chart-data')
-def chart_data():
-    """Grafik verilerini getir"""
-    now = datetime.now()
-    labels = [(now - timedelta(minutes=i)).strftime('%H:%M') for i in range(30)][::-1]
-    
-    valid_clicks = []
-    suspicious_clicks = []
-    
-    for label in labels:
-        hour, minute = map(int, label.split(':'))
-        valid_count = 0
-        suspicious_count = 0
-        
-        for click in detector.click_data:
-            if click['timestamp'].hour == hour and click['timestamp'].minute == minute:
-                if any(s['timestamp'].startswith(click['timestamp'].isoformat()[:16]) 
-                      for s in detector.suspicious_activities):
-                    suspicious_count += 1
-                else:
-                    valid_count += 1
-        
-        valid_clicks.append(valid_count)
-        suspicious_clicks.append(suspicious_count)
-    
-    return jsonify({
-        'labels': labels,
-        'valid_clicks': valid_clicks,
-        'suspicious_clicks': suspicious_clicks
-    })
-
-@app.route('/api/suspicious-activities')
-def suspicious_activities():
-    """Son şüpheli aktiviteleri getir"""
-    return jsonify({
-        'activities': list(detector.suspicious_activities)
-    })
 
 @app.route('/record-click', methods=['POST'])
 def record_click():
-    """Tıklama kaydı endpoint'i"""
-    click_info = request.json
-    result = detector.record_click(click_info)
-    return jsonify(result)
+    click_data = request.json
+    success = detector.record_click(click_data)
+    return jsonify({'success': success})
 
-@app.route('/stats', methods=['GET'])
+@app.route('/api/stats')
 def get_stats():
-    """İstatistik endpoint'i"""
     return jsonify(detector.get_stats())
+
+@app.route('/api/quick-exit-report')
+def get_quick_exit_report():
+    return jsonify(detector.get_quick_exit_report())
+
+@app.route('/api/suspicious-activities')
+def get_suspicious_activities():
+    return jsonify(list(detector.suspicious_activities))
 
 if __name__ == '__main__':
     app.run(debug=True) 
