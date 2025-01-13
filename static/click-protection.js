@@ -1,45 +1,67 @@
 class ClickProtection {
-    constructor(serverUrl = 'http://localhost:5000') {
-        this.serverUrl = serverUrl;
+    constructor() {
+        this.serverUrl = 'https://click-protection.onrender.com';
         this.setupEventListeners();
+        console.log('Tıklama koruma sistemi aktif');
     }
 
     setupEventListeners() {
-        // Tüm reklamları izle
-        document.addEventListener('DOMContentLoaded', () => {
-            this.watchAds();
+        // Mevcut reklamları dinle
+        this.addClickListeners();
+
+        // Yeni eklenen reklamları izle
+        const observer = new MutationObserver((mutations) => {
+            mutations.forEach(() => {
+                this.addClickListeners();
+            });
         });
 
-        // Dinamik olarak eklenen reklamlar için MutationObserver kullan
-        const observer = new MutationObserver(() => {
-            this.watchAds();
-        });
-
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        // document.body varsa gözlemlemeye başla
+        if (document.body) {
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        } else {
+            // document.body hazır olduğunda gözlemlemeye başla
+            document.addEventListener('DOMContentLoaded', () => {
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+            });
+        }
     }
 
-    watchAds() {
-        // Google Ads elementlerini bul
-        const adElements = document.querySelectorAll('[data-ad-client], [data-ad-slot], .adsbygoogle');
-        
-        adElements.forEach(ad => {
-            if (!ad.dataset.protected) {
-                ad.dataset.protected = 'true';
-                ad.addEventListener('click', (e) => this.handleAdClick(e));
+    addClickListeners() {
+        // Google Ads iframe'lerini bul
+        const adIframes = document.querySelectorAll('iframe[id^="google_ads_iframe"]');
+        adIframes.forEach(iframe => {
+            if (!iframe.dataset.protected) {
+                iframe.dataset.protected = 'true';
+                iframe.addEventListener('click', (e) => this.handleClick(e));
+            }
+        });
+
+        // Diğer reklam elementlerini bul
+        const adElements = document.querySelectorAll('[class*="ad"], [id*="ad"], [class*="advertisement"]');
+        adElements.forEach(element => {
+            if (!element.dataset.protected) {
+                element.dataset.protected = 'true';
+                element.addEventListener('click', (e) => this.handleClick(e));
             }
         });
     }
 
-    async handleAdClick(event) {
-        const clickInfo = {
+    async handleClick(event) {
+        const clickData = {
+            url: window.location.href,
+            timestamp: new Date().toISOString(),
             ip: await this.getIP(),
             user_agent: navigator.userAgent,
             referrer: document.referrer,
-            campaign_id: this.getCampaignId(event.target),
-            timestamp: new Date().toISOString()
+            target_element: event.target.tagName,
+            campaign_id: this.getCampaignId(event.target)
         };
 
         try {
@@ -48,19 +70,16 @@ class ClickProtection {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(clickInfo)
+                body: JSON.stringify(clickData)
             });
 
             const result = await response.json();
-
-            if (result.is_fraudulent) {
+            if (!result.success) {
+                console.warn('Şüpheli tıklama tespit edildi');
                 event.preventDefault();
-                event.stopPropagation();
-                console.warn('Şüpheli tıklama tespit edildi:', result.reason);
-                return false;
             }
         } catch (error) {
-            console.error('Tıklama kontrolü hatası:', error);
+            console.error('Tıklama kaydedilirken hata oluştu:', error);
         }
     }
 
@@ -71,17 +90,22 @@ class ClickProtection {
             return data.ip;
         } catch (error) {
             console.error('IP adresi alınamadı:', error);
-            return '';
+            return 'unknown';
         }
     }
 
     getCampaignId(element) {
-        // Google Ads kampanya ID'sini bulmaya çalış
-        const adClient = element.closest('[data-ad-client]')?.dataset.adClient;
-        const adSlot = element.closest('[data-ad-slot]')?.dataset.adSlot;
-        return `${adClient || ''}-${adSlot || ''}`;
+        // Google Ads için kampanya ID'sini bul
+        const adContainer = element.closest('[id^="google_ads_iframe"]');
+        if (adContainer) {
+            const id = adContainer.id.match(/google_ads_iframe_(.+)$/);
+            return id ? id[1] : 'unknown';
+        }
+        return 'unknown';
     }
 }
 
-// Global instance oluştur
-window.clickProtection = new ClickProtection('https://servisimonline.com/click-protection'); 
+// Sayfada sadece bir kez başlat
+if (!window.clickProtection) {
+    window.clickProtection = new ClickProtection();
+} 
