@@ -376,7 +376,7 @@ def check_ad_visibility():
             }), 400
         
         # IP'nin bu kampanyayı kaç kez gördüğünü kontrol et
-        click_count = len(detector.seen_ips.get(ip, set()))
+        click_count = len(detector.seen_ips[ip])
         
         if click_count >= 2:  # 2'den fazla görüntülemede engelle
             return jsonify({
@@ -386,11 +386,11 @@ def check_ad_visibility():
             })
         
         # IP'nin kampanya görüntülemesini kaydet
-        detector.record_ad_view(ip, campaign_id)
+        detector.seen_ips[ip].add(campaign_id)
         
         return jsonify({
             'show_ad': True,
-            'reason': 'İlk kez gösteriliyor',
+            'reason': f'{click_count + 1}. gösterim',
             'click_count': click_count + 1
         })
     except Exception as e:
