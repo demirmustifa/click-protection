@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Global değişkenler
 last_activity_time = datetime.now()
 INACTIVITY_THRESHOLD = 600  # 10 dakika
+MODEL_TRAINING_INTERVAL = 7200  # 2 saat
 
 @app.before_request
 def before_request():
@@ -41,30 +42,31 @@ signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 def keep_alive():
-    """Basit ping servisi - sadece inaktif durumlarda çalışır"""
+    """Basit ping servisi"""
     global last_activity_time
     
     while True:
         try:
+            time.sleep(30)  # Önce bekle, sonra kontrol et
+            
             current_time = datetime.now()
             inactive_duration = (current_time - last_activity_time).total_seconds()
             
-            # Sadece 10 dakika inaktif kaldıysa ping at
             if inactive_duration >= INACTIVITY_THRESHOLD:
-                response = requests.head(
-                    "https://click-protection.onrender.com/",
-                    timeout=5,
-                    headers={'User-Agent': 'ClickProtection-Ping/1.0'}
-                )
-                logger.info(f"İnaktif ping gönderildi - Status: {response.status_code}")
-                last_activity_time = current_time
-            
-            # Her 30 saniyede bir kontrol et
-            time.sleep(30)
-            
+                try:
+                    response = requests.head(
+                        "https://click-protection.onrender.com/",
+                        timeout=5,
+                        headers={'User-Agent': 'ClickProtection-Ping/1.0'}
+                    )
+                    if response.status_code == 200:
+                        last_activity_time = current_time
+                        logger.info("Ping başarılı")
+                except:
+                    pass  # Ping hatalarını sessizce geç
+                
         except Exception as e:
-            logger.error(f"Ping hatası: {str(e)}")
-            time.sleep(60)  # Hata durumunda 1 dakika bekle
+            time.sleep(60)
 
 # Ping servisini başlat
 if os.environ.get('RENDER') == 'true':
@@ -77,45 +79,42 @@ if os.environ.get('RENDER') == 'true':
 
 class ClickFraudDetector:
     def __init__(self):
-        self.clicks = deque(maxlen=10000)  # Son 10000 tıklamayı sakla
-        self.suspicious_activities = deque(maxlen=100)  # Son 100 şüpheli aktiviteyi sakla
-        self.sessions = {}  # Oturum bilgilerini sakla
+        self.clicks = deque(maxlen=1000)  # Maksimum tıklama sayısını azalttık
+        self.suspicious_activities = deque(maxlen=50)  # Maksimum şüpheli aktivite sayısını azalttık
+        self.sessions = {}
         self.lock = threading.Lock()
-        
-        # Periyodik model eğitimi için thread başlat
         self.model = None
-        self.training_thread = threading.Thread(target=self._periodic_training)
-        self.training_thread.daemon = True
-        self.training_thread.start()
-
-    def _periodic_training(self):
-        """Her saat başı modeli yeniden eğit"""
-        while True:
-            time.sleep(3600)  # 1 saat bekle
-            with self.lock:
-                if len(self.clicks) > 100:  # En az 100 tıklama varsa
-                    self._train_model()
-
+        self.last_training_time = datetime.now()
+        
     def _train_model(self):
         """Mevcut verilerle modeli eğit"""
-        if len(self.clicks) < 100:
+        current_time = datetime.now()
+        
+        # Son eğitimden bu yana 2 saat geçmediyse eğitme
+        if (current_time - self.last_training_time).total_seconds() < MODEL_TRAINING_INTERVAL:
             return
-        
-        # Tıklama verilerinden özellikler çıkar
-        features = []
-        for click in self.clicks:
-            session_key = f"{click['ip']}_{click.get('campaign_id', 'unknown')}"
-            session = self.sessions.get(session_key, {})
             
-            features.append([
-                session.get('click_count', 0),
-                session.get('quick_exits', 0),
-                (session.get('quick_exits', 0) / session.get('click_count', 1)) if session.get('click_count', 0) > 0 else 0
-            ])
-        
-        # Modeli eğit
-        self.model = IsolationForest(contamination=0.1, random_state=42)
-        self.model.fit(features)
+        if len(self.clicks) < 50:  # Minimum veri sayısını azalttık
+            return
+            
+        try:
+            features = []
+            for click in self.clicks:
+                session_key = f"{click['ip']}_{click.get('campaign_id', 'unknown')}"
+                session = self.sessions.get(session_key, {})
+                
+                features.append([
+                    min(session.get('click_count', 0), 100),  # Maksimum 100 ile sınırla
+                    min(session.get('quick_exits', 0), 50),   # Maksimum 50 ile sınırla
+                    session.get('quick_exits', 0) / max(session.get('click_count', 1), 1)
+                ])
+            
+            self.model = IsolationForest(contamination=0.1, random_state=42, n_estimators=50)
+            self.model.fit(features)
+            self.last_training_time = current_time
+            
+        except Exception as e:
+            logger.error(f"Model eğitimi hatası: {str(e)}")
 
     def _is_bot(self, user_agent):
         """Kullanıcı ajanının bot olup olmadığını kontrol et"""
@@ -124,41 +123,38 @@ class ClickFraudDetector:
         return any(pattern in user_agent for pattern in bot_patterns)
 
     def record_click(self, click_data):
+        """Tıklama kaydı - basitleştirilmiş versiyon"""
         with self.lock:
-            current_time = datetime.now()
-            ip = click_data.get('ip', 'unknown')
-            
-            # Oturum kontrolü
-            session_key = f"{ip}_{click_data.get('campaign_id', 'unknown')}"
-            session = self.sessions.get(session_key, {
-                'first_click': current_time,
-                'last_click': current_time,
-                'click_count': 0,
-                'quick_exits': 0
-            })
-            
-            # Hızlı çıkış kontrolü (3 saniyeden az)
-            if session['click_count'] > 0:
-                time_diff = (current_time - session['last_click']).total_seconds()
-                if time_diff < 3:
-                    session['quick_exits'] += 1
-                    self._record_suspicious_activity(click_data, "Hızlı çıkış tespit edildi", time_diff)
-            
-            session['last_click'] = current_time
-            session['click_count'] += 1
-            self.sessions[session_key] = session
-            
-            # Tıklama verisini kaydet
-            click_data['timestamp'] = current_time
-            click_data['session_data'] = {
-                'quick_exits': session['quick_exits'],
-                'total_clicks': session['click_count']
-            }
-            self.clicks.append(click_data)
-            
-            # Şüpheli aktivite kontrolü
-            is_suspicious = self._analyze_click(click_data, session)
-            return not is_suspicious
+            try:
+                current_time = datetime.now()
+                ip = click_data.get('ip', 'unknown')
+                session_key = f"{ip}_{click_data.get('campaign_id', 'unknown')}"
+                
+                session = self.sessions.get(session_key, {
+                    'first_click': current_time,
+                    'last_click': current_time,
+                    'click_count': 0,
+                    'quick_exits': 0
+                })
+                
+                # Basit hızlı çıkış kontrolü
+                if session['click_count'] > 0:
+                    time_diff = (current_time - session['last_click']).total_seconds()
+                    if time_diff < 3:
+                        session['quick_exits'] += 1
+                
+                session['last_click'] = current_time
+                session['click_count'] = min(session['click_count'] + 1, 1000)  # Maksimum 1000 ile sınırla
+                self.sessions[session_key] = session
+                
+                click_data['timestamp'] = current_time
+                self.clicks.append(click_data)
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"Tıklama kaydı hatası: {str(e)}")
+                return False
 
     def _analyze_click(self, click_data, session):
         is_suspicious = False
