@@ -387,7 +387,11 @@ def check_ad_visibility():
             detector.country_stats[location['country']] += 1
         
         # IP'nin bu kampanyayı kaç kez gördüğünü kontrol et
-        click_count = len(detector.seen_ips[ip])
+        if ip not in detector.seen_ips:
+            detector.seen_ips[ip] = set()
+            click_count = 0
+        else:
+            click_count = len(detector.seen_ips[ip])
         
         if click_count >= 2:  # 2'den fazla görüntülemede engelle
             return jsonify({
