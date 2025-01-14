@@ -382,12 +382,19 @@ def check_ad_visibility():
         if ip not in detector.seen_ips:
             detector.seen_ips[ip] = set()
             click_count = 0
-            app.logger.info(f"Yeni IP: {ip}")
-        else:
-            click_count = len(detector.seen_ips[ip])
-            app.logger.info(f"Mevcut IP: {ip}, Görüntüleme: {click_count}")
+            app.logger.info(f"Yeni IP ilk ziyaret: {ip}")
+            
+            # Yeni IP için normal sayfa göster
+            return jsonify({
+                'show_ad': True,
+                'reason': 'İlk ziyaret',
+                'click_count': 1
+            })
+            
+        click_count = len(detector.seen_ips[ip])
+        app.logger.info(f"Mevcut IP görüntüleme: {ip}, sayı: {click_count}")
         
-        # IP limiti kontrolü
+        # IP limiti kontrolü (2'den fazla görüntülemede engelle)
         if click_count >= 2:
             return jsonify({
                 'show_ad': False,
@@ -405,7 +412,7 @@ def check_ad_visibility():
         detector.location_data.append({
             'timestamp': datetime.now(),
             'location': location,
-            'risk_score': click_count * 25  # Her görüntülemede risk skoru artar
+            'risk_score': click_count * 25
         })
         
         if location['country'] != 'Unknown':
