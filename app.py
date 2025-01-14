@@ -489,5 +489,41 @@ def reset_ips():
             'message': 'Hata oluştu'
         }), 500
 
+@app.route('/pre-check-ad', methods=['POST'])
+def pre_check_ad():
+    """Reklama tıklamadan önce kontrol et"""
+    try:
+        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
+        
+        # IP'nin görüntüleme sayısını kontrol et
+        if ip not in detector.seen_ips:
+            return jsonify({
+                'allow_click': True,
+                'message': 'İlk ziyaret'
+            })
+        
+        click_count = len(detector.seen_ips[ip])
+        
+        # 1'den fazla görüntülemede engelle
+        if click_count >= 1:
+            logger.warning(f"Reklam tıklaması engellendi: {ip}")
+            return jsonify({
+                'allow_click': False,
+                'redirect': 'https://servisimonline.com/bot-saldirisi.html',
+                'message': 'Çok fazla tıklama'
+            })
+            
+        return jsonify({
+            'allow_click': True,
+            'message': 'Tıklamaya izin verildi'
+        })
+        
+    except Exception as e:
+        logger.error(f"Ön kontrol hatası: {str(e)}")
+        return jsonify({
+            'allow_click': True,
+            'message': 'Hata durumunda izin ver'
+        })
+
 if __name__ == '__main__':
     app.run(debug=True) 
