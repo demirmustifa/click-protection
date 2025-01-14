@@ -369,12 +369,12 @@ def check_ad_visibility():
         
         # IP'nin görüntüleme sayısını kontrol et
         if ip not in detector.seen_ips:
-            detector.seen_ips[ip] = set(['first_view'])
-            click_count = 1
-            logger.info(f"İlk görüntüleme: {ip}")
+            detector.seen_ips[ip] = set()  # Yeni IP için boş set oluştur
+            click_count = 0  # Yeni IP için sayaç sıfır
+            logger.info(f"Yeni IP ilk ziyaret: {ip}")
         else:
             click_count = len(detector.seen_ips[ip])
-            logger.info(f"Görüntüleme sayısı {click_count}: {ip}")
+            logger.info(f"Mevcut IP görüntüleme sayısı {click_count}: {ip}")
         
         # 2'den fazla görüntülemede engelle
         if click_count >= 2:
@@ -387,7 +387,8 @@ def check_ad_visibility():
             })
         
         # IP'nin görüntüleme sayısını artır
-        detector.seen_ips[ip].add(f'view_{click_count + 1}')
+        view_id = f'view_{datetime.now().strftime("%Y%m%d%H%M%S")}'
+        detector.seen_ips[ip].add(view_id)
         
         # IP'nin konum bilgilerini al ve kaydet
         location = detector.get_location_from_ip(ip)
@@ -402,8 +403,8 @@ def check_ad_visibility():
         
         return jsonify({
             'show_ad': True,
-            'reason': f'{click_count}. gösterim',
-            'click_count': click_count
+            'reason': f'{click_count + 1}. gösterim',
+            'click_count': click_count + 1
         })
     except Exception as e:
         logger.error(f"Kontrol hatası: {str(e)}")
