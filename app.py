@@ -381,29 +381,16 @@ def check_ad_visibility():
         
         # IP'nin görüntüleme sayısını kontrol et
         if ip not in detector.seen_ips:
-            detector.seen_ips[ip] = set()
+            detector.seen_ips[ip] = []
             click_count = 0
             app.logger.info(f"Yeni IP ilk ziyaret: {ip}")
-            
-            # IP'nin konum bilgilerini al ve kaydet
-            location = detector.get_location_from_ip(ip)
-            detector.location_data.append({
-                'timestamp': datetime.now(),
-                'location': location,
-                'risk_score': 0
-            })
-            
-            if location['country'] != 'Unknown':
-                detector.country_stats[location['country']] += 1
-            
-            return jsonify({
-                'show_ad': True,
-                'reason': 'İlk ziyaret',
-                'click_count': 0
-            })
-        
-        click_count = len(detector.seen_ips[ip])
-        app.logger.info(f"Mevcut IP görüntüleme: {ip}, sayı: {click_count}")
+        else:
+            # Son 24 saat içindeki görüntülemeleri say
+            current_time = datetime.now()
+            detector.seen_ips[ip] = [t for t in detector.seen_ips[ip] 
+                                   if (current_time - t).total_seconds() < 24 * 3600]
+            click_count = len(detector.seen_ips[ip])
+            app.logger.info(f"Mevcut IP görüntüleme: {ip}, sayı: {click_count}")
         
         # IP limiti kontrolü (2'den fazla görüntülemede engelle)
         if click_count >= 2:
@@ -414,9 +401,8 @@ def check_ad_visibility():
                 'click_count': click_count
             })
         
-        # Benzersiz görüntüleme ID'si oluştur ve kaydet
-        view_id = f"view_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        detector.seen_ips[ip].add(view_id)
+        # Görüntüleme zamanını kaydet
+        detector.seen_ips[ip].append(datetime.now())
         
         # Konum bilgilerini güncelle
         location = detector.get_location_from_ip(ip)
