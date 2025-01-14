@@ -377,6 +377,7 @@ def check_ad_visibility():
     """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
     try:
         ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
+        app.logger.info(f"Gelen IP: {ip}")
         
         # IP'nin görüntüleme sayısını kontrol et
         if ip not in detector.seen_ips:
@@ -384,13 +385,23 @@ def check_ad_visibility():
             click_count = 0
             app.logger.info(f"Yeni IP ilk ziyaret: {ip}")
             
-            # Yeni IP için normal sayfa göster
+            # IP'nin konum bilgilerini al ve kaydet
+            location = detector.get_location_from_ip(ip)
+            detector.location_data.append({
+                'timestamp': datetime.now(),
+                'location': location,
+                'risk_score': 0
+            })
+            
+            if location['country'] != 'Unknown':
+                detector.country_stats[location['country']] += 1
+            
             return jsonify({
                 'show_ad': True,
                 'reason': 'İlk ziyaret',
-                'click_count': 1
+                'click_count': 0
             })
-            
+        
         click_count = len(detector.seen_ips[ip])
         app.logger.info(f"Mevcut IP görüntüleme: {ip}, sayı: {click_count}")
         
@@ -403,11 +414,11 @@ def check_ad_visibility():
                 'click_count': click_count
             })
         
-        # Benzersiz görüntüleme ID'si oluştur
+        # Benzersiz görüntüleme ID'si oluştur ve kaydet
         view_id = f"view_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         detector.seen_ips[ip].add(view_id)
         
-        # IP'nin konum bilgilerini al ve kaydet
+        # Konum bilgilerini güncelle
         location = detector.get_location_from_ip(ip)
         detector.location_data.append({
             'timestamp': datetime.now(),
