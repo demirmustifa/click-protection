@@ -354,8 +354,19 @@ class ClickFraudDetector:
         except Exception as e:
             logger.error(f"Konum istatistikleri hatası: {str(e)}")
             return {}
+    
+    def reset_ips(self):
+        """Tüm IP kayıtlarını sıfırla"""
+        self.seen_ips = {}
+        self.location_data = []
+        self.country_stats = defaultdict(int)
+        logger.info("Tüm IP kayıtları sıfırlandı")
 
+# Global detector instance
 detector = ClickFraudDetector()
+
+# Her başlangıçta IP'leri sıfırla
+detector.reset_ips()
 
 @app.route('/')
 def dashboard():
@@ -461,6 +472,22 @@ def download_pdf():
             download_name=f'click_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
         )
     return jsonify({'error': 'Rapor oluşturulamadı'}), 500
+
+@app.route('/reset-ips', methods=['POST'])
+def reset_ips():
+    """IP kayıtlarını sıfırla"""
+    try:
+        detector.reset_ips()
+        return jsonify({
+            'success': True,
+            'message': 'IP kayıtları sıfırlandı'
+        })
+    except Exception as e:
+        logger.error(f"Sıfırlama hatası: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Hata oluştu'
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True) 
