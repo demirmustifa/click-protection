@@ -380,16 +380,15 @@ def check_ad_visibility():
         
         # IP'nin görüntüleme sayısını kontrol et
         if ip not in detector.seen_ips:
-            detector.seen_ips[ip] = set()  # Yeni IP için boş set oluştur
-            click_count = 0  # Yeni IP için sayaç sıfır
-            logger.info(f"Yeni IP ilk ziyaret: {ip}")
+            detector.seen_ips[ip] = set()
+            click_count = 0
+            app.logger.info(f"Yeni IP: {ip}")
         else:
             click_count = len(detector.seen_ips[ip])
-            logger.info(f"Mevcut IP görüntüleme sayısı {click_count}: {ip}")
+            app.logger.info(f"Mevcut IP: {ip}, Görüntüleme: {click_count}")
         
-        # 2'den fazla görüntülemede engelle
+        # IP limiti kontrolü
         if click_count >= 2:
-            logger.warning(f"IP limiti aşıldı: {ip}")
             return jsonify({
                 'show_ad': False,
                 'redirect': 'https://servisimonline.com/bot-saldirisi.html',
@@ -397,8 +396,8 @@ def check_ad_visibility():
                 'click_count': click_count
             })
         
-        # IP'nin görüntüleme sayısını artır
-        view_id = f'view_{datetime.now().strftime("%Y%m%d%H%M%S")}'
+        # Benzersiz görüntüleme ID'si oluştur
+        view_id = f"view_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         detector.seen_ips[ip].add(view_id)
         
         # IP'nin konum bilgilerini al ve kaydet
