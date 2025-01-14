@@ -367,25 +367,18 @@ def check_ad_visibility():
     try:
         ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
         
-        # IP'nin konum bilgilerini al ve kaydet
-        location = detector.get_location_from_ip(ip)
-        detector.location_data.append({
-            'timestamp': datetime.now(),
-            'location': location,
-            'risk_score': 0
-        })
-        
-        if location['country'] != 'Unknown':
-            detector.country_stats[location['country']] += 1
-        
         # IP'nin görüntüleme sayısını kontrol et
         if ip not in detector.seen_ips:
             detector.seen_ips[ip] = set(['first_view'])
-            click_count = 0
+            click_count = 1
+            logger.info(f"İlk görüntüleme: {ip}")
         else:
             click_count = len(detector.seen_ips[ip])
+            logger.info(f"Görüntüleme sayısı {click_count}: {ip}")
         
-        if click_count >= 2:  # 2'den fazla görüntülemede engelle
+        # 2'den fazla görüntülemede engelle
+        if click_count >= 2:
+            logger.warning(f"IP limiti aşıldı: {ip}")
             return jsonify({
                 'show_ad': False,
                 'redirect': 'https://servisimonline.com/bot-saldirisi.html',
@@ -396,10 +389,21 @@ def check_ad_visibility():
         # IP'nin görüntüleme sayısını artır
         detector.seen_ips[ip].add(f'view_{click_count + 1}')
         
+        # IP'nin konum bilgilerini al ve kaydet
+        location = detector.get_location_from_ip(ip)
+        detector.location_data.append({
+            'timestamp': datetime.now(),
+            'location': location,
+            'risk_score': click_count * 25  # Her görüntülemede risk skoru artar
+        })
+        
+        if location['country'] != 'Unknown':
+            detector.country_stats[location['country']] += 1
+        
         return jsonify({
             'show_ad': True,
-            'reason': f'{click_count + 1}. gösterim',
-            'click_count': click_count + 1
+            'reason': f'{click_count}. gösterim',
+            'click_count': click_count
         })
     except Exception as e:
         logger.error(f"Kontrol hatası: {str(e)}")
