@@ -111,30 +111,35 @@ class ClickFraudDetector:
             current_time = time.time()
             key = f"{ip}:{campaign_id}" if campaign_id else ip
             
-            # Son 1 saatteki tıklamaları temizle
+            # Son 24 saatteki tıklamaları temizle
             self.click_timestamps[key] = [ts for ts in self.click_timestamps[key] 
-                                        if current_time - ts < 3600]
+                                        if current_time - ts < 86400]  # 24 saat
             
-            # Toplam tıklama sayısı kontrolü
+            # Toplam tıklama sayısı kontrolü (24 saat içinde)
             click_count = len(self.click_timestamps[key])
             
-            # Son 10 saniyedeki tıklama sayısı
+            # Son 1 dakikadaki tıklama sayısı
             recent_clicks = len([ts for ts in self.click_timestamps[key] 
-                               if current_time - ts < 10])
+                               if current_time - ts < 60])  # 1 dakika
             
-            logger.info(f"IP: {ip}, Toplam tıklama: {click_count}, Son 10sn: {recent_clicks}")
+            logger.info(f"IP: {ip}, 24 saat içinde toplam: {click_count}, Son 1dk: {recent_clicks}")
             
             # Bot kontrolü kuralları
-            if click_count >= 2:  # Toplam limit
-                logger.warning(f"IP limit aşımı: {ip}")
-                return False, "IP limiti aşıldı"
+            if click_count >= 5:  # 24 saat içinde max 5 tıklama
+                logger.warning(f"24 saat limit aşımı: {ip}")
+                return False, "24 saat içinde çok fazla tıklama"
                 
-            if recent_clicks >= 2:  # Hız limiti
+            if recent_clicks >= 2:  # 1 dakika içinde max 2 tıklama
                 logger.warning(f"Hız limiti aşımı: {ip}")
                 return False, "Çok hızlı tıklama"
+            
+            # Bot kontrolleri
+            if not user_agent:
+                return False, "Geçersiz istek"
                 
-            if not user_agent or 'bot' in user_agent.lower():
-                logger.warning(f"Bot tespiti: {ip}")
+            user_agent_lower = user_agent.lower()
+            if any(bot in user_agent_lower for bot in ['bot', 'crawler', 'spider', 'headless']):
+                logger.warning(f"Bot user-agent tespiti: {ip}")
                 return False, "Bot tespit edildi"
             
             # Tıklama sayısını artır
@@ -182,30 +187,45 @@ def bot_page():
 def dashboard():
     """Dashboard sayfası"""
     try:
-        # Memory storage veya Redis'ten verileri al
+        # Tıklama verilerini al
         click_data = {}
         if redis_client:
-            # Redis'ten tüm keyleri al
             keys = redis_client.keys('clicks:*')
             for key in keys:
-                click_data[key] = int(redis_client.get(key))
+                click_data[key.replace('clicks:', '')] = int(redis_client.get(key))
         else:
-            # Memory storage'dan al
-            click_data = detector.memory_storage
+            for key, timestamps in detector.click_timestamps.items():
+                click_data[key] = len(timestamps)
 
-        # Verileri işle
+        # İstatistikleri hesapla
         total_clicks = sum(click_data.values())
         unique_ips = len(click_data)
         
+        # Ülke bazlı istatistikler
+        country_stats = Counter()
+        try:
+            with geoip2.database.Reader('GeoLite2-Country.mmdb') as reader:
+                for ip in click_data.keys():
+                    try:
+                        if ',' in ip:
+                            ip = ip.split(',')[0].strip()
+                        response = reader.country(ip)
+                        country_stats[response.country.name] += click_data[ip]
+                    except:
+                        country_stats['Bilinmeyen'] += click_data[ip]
+        except:
+            country_stats['Bilinmeyen'] = total_clicks
+
         return render_template(
             'dashboard.html',
             click_data=click_data,
             total_clicks=total_clicks,
-            unique_ips=unique_ips
+            unique_ips=unique_ips,
+            country_stats=dict(country_stats)
         )
     except Exception as e:
         logger.error(f"Dashboard hatası: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return render_template('dashboard.html', error=str(e))
 
 # Global detector instance
 detector = ClickFraudDetector()
