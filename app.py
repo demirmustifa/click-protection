@@ -399,7 +399,8 @@ def check_ad_visibility():
             return jsonify({
                 'show_ad': True,
                 'reason': 'İlk ziyaret',
-                'click_count': 0
+                'click_count': 0,
+                'gclid': request.args.get('gclid', '')  # Google Click ID'yi sakla
             })
             
         # Son 24 saat içindeki görüntülemeleri say
@@ -411,11 +412,21 @@ def check_ad_visibility():
         
         # IP limiti kontrolü (2'den fazla görüntülemede engelle)
         if click_count >= 2:
+            # Google Ads'e geçersiz tıklama bildirimi
+            gclid = request.args.get('gclid', '')
+            if gclid:
+                try:
+                    requests.post('https://www.google.com/ads/conversion/invalid', 
+                                data={'gclid': gclid, 'reason': 'suspicious_activity'})
+                except:
+                    pass
+                    
             return jsonify({
                 'show_ad': False,
                 'redirect': 'https://servisimonline.com/bot-saldirisi.html',
                 'reason': 'IP limiti aşıldı',
-                'click_count': click_count
+                'click_count': click_count,
+                'invalid_click': True
             })
         
         # Görüntüleme zamanını kaydet
@@ -423,10 +434,31 @@ def check_ad_visibility():
         
         # Konum bilgilerini güncelle
         location = detector.get_location_from_ip(ip)
+        risk_score = click_count * 25
+        
+        # Bot veya şüpheli aktivite kontrolü
+        user_agent = request.headers.get('User-Agent', '').lower()
+        if 'bot' in user_agent or 'crawler' in user_agent or 'spider' in user_agent:
+            # Google Ads'e geçersiz tıklama bildirimi
+            gclid = request.args.get('gclid', '')
+            if gclid:
+                try:
+                    requests.post('https://www.google.com/ads/conversion/invalid', 
+                                data={'gclid': gclid, 'reason': 'bot_activity'})
+                except:
+                    pass
+                    
+            return jsonify({
+                'show_ad': False,
+                'redirect': 'https://servisimonline.com/bot-saldirisi.html',
+                'reason': 'Bot aktivitesi tespit edildi',
+                'invalid_click': True
+            })
+        
         detector.location_data.append({
             'timestamp': datetime.now(),
             'location': location,
-            'risk_score': click_count * 25
+            'risk_score': risk_score
         })
         
         if location['country'] != 'Unknown':
@@ -435,7 +467,8 @@ def check_ad_visibility():
         return jsonify({
             'show_ad': True,
             'reason': f'{click_count + 1}. gösterim',
-            'click_count': click_count + 1
+            'click_count': click_count + 1,
+            'gclid': request.args.get('gclid', '')
         })
     except Exception as e:
         logger.error(f"Kontrol hatası: {str(e)}")
