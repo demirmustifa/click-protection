@@ -20,6 +20,13 @@ from flask_cors import CORS
 import redis
 import hashlib
 
+# Loglama ayarlarını yapılandır
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 CORS(app, resources={
     r"/*": {
@@ -30,14 +37,19 @@ CORS(app, resources={
 })
 
 # Redis bağlantısı
-redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-try:
-    redis_client = redis.from_url(redis_url, decode_responses=True)
-    redis_client.ping()  # Test connection
-    logger.info("Redis bağlantısı başarılı")
-except Exception as e:
-    logger.error(f"Redis bağlantı hatası: {str(e)}")
-    redis_client = None
+redis_url = os.getenv('REDIS_URL')
+redis_client = None
+
+if redis_url:
+    try:
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+        redis_client.ping()
+        logger.info("Redis bağlantısı başarılı")
+    except Exception as e:
+        logger.error(f"Redis bağlantı hatası: {str(e)}")
+        redis_client = None
+else:
+    logger.warning("REDIS_URL bulunamadı, memory storage kullanılacak")
 
 # E-posta yapılandırması
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -48,13 +60,6 @@ app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER')
 
 mail = Mail(app)
-
-# Loglama ayarlarını yapılandır
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 class ClickFraudDetector:
     def __init__(self):
