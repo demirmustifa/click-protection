@@ -149,5 +149,34 @@ def bot_page():
     """Bot sayfası"""
     return render_template('bot-saldirisi.html')
 
+@app.route('/dashboard')
+def dashboard():
+    """Dashboard sayfası"""
+    try:
+        # Memory storage veya Redis'ten verileri al
+        click_data = {}
+        if redis_client:
+            # Redis'ten tüm keyleri al
+            keys = redis_client.keys('clicks:*')
+            for key in keys:
+                click_data[key] = int(redis_client.get(key))
+        else:
+            # Memory storage'dan al
+            click_data = detector.memory_storage
+
+        # Verileri işle
+        total_clicks = sum(click_data.values())
+        unique_ips = len(click_data)
+        
+        return render_template(
+            'dashboard.html',
+            click_data=click_data,
+            total_clicks=total_clicks,
+            unique_ips=unique_ips
+        )
+    except Exception as e:
+        logger.error(f"Dashboard hatası: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 # Global detector instance
 detector = ClickFraudDetector()
