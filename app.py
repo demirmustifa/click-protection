@@ -21,11 +21,23 @@ import redis
 import hashlib
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/*": {
+        "origins": ["https://servisimonline.com", "http://servisimonline.com"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "X-Forwarded-For"]
+    }
+})
 
 # Redis bağlantısı
 redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
-redis_client = redis.from_url(redis_url, decode_responses=True)
+try:
+    redis_client = redis.from_url(redis_url, decode_responses=True)
+    redis_client.ping()  # Test connection
+    logger.info("Redis bağlantısı başarılı")
+except Exception as e:
+    logger.error(f"Redis bağlantı hatası: {str(e)}")
+    redis_client = None
 
 # E-posta yapılandırması
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -51,80 +63,47 @@ class ClickFraudDetector:
         self.admin_email = os.getenv('ADMIN_EMAIL')
         self.location_data = []
         self.country_stats = Counter()
+        self.memory_storage = {}  # Redis çalışmazsa memory'de tut
         
-        # GeoLite2 veritabanını yükle
-        try:
-            self.geoip_reader = geoip2.database.Reader('GeoLite2-City.mmdb')
-        except FileNotFoundError:
-            self.geoip_reader = None
-            logger.error("GeoLite2 veritabanı bulunamadı")
-
     def get_click_count(self, ip, campaign_id=None):
-        """Redis'ten IP için tıklama sayısını al"""
+        """IP için tıklama sayısını al"""
         try:
-            key = f"clicks:{ip}"
-            if campaign_id:
-                key += f":{campaign_id}"
-            
-            clicks = redis_client.get(key)
-            return int(clicks) if clicks else 0
-        except Exception as e:
-            logger.error(f"Redis okuma hatası: {str(e)}")
-            return 0
+            if redis_client:
+                key = f"clicks:{ip}"
+                if campaign_id:
+                    key += f":{campaign_id}"
+                clicks = redis_client.get(key)
+                return int(clicks) if clicks else 0
+            else:
+                key = f"{ip}:{campaign_id}" if campaign_id else ip
+                return self.memory_storage.get(key, 0)
+        except:
+            return self.memory_storage.get(ip, 0)
 
     def increment_click_count(self, ip, campaign_id=None):
-        """Redis'te IP için tıklama sayısını artır"""
+        """IP için tıklama sayısını artır"""
         try:
-            key = f"clicks:{ip}"
-            if campaign_id:
-                key += f":{campaign_id}"
-                
-            # 1 saat geçerli olacak şekilde artır
-            redis_client.incr(key)
-            redis_client.expire(key, 3600)  # 1 saat
-        except Exception as e:
-            logger.error(f"Redis yazma hatası: {str(e)}")
-
-    def is_bot_activity(self, user_agent, ip):
-        """Bot aktivitesi kontrolü"""
-        try:
-            if not user_agent:
-                return True
-                
-            user_agent = user_agent.lower()
-            suspicious_terms = ['bot', 'crawler', 'spider', 'http', 'python', 'curl']
-            
-            # User-Agent kontrolü
-            if any(term in user_agent for term in suspicious_terms):
-                return True
-                
-            # Hız kontrolü
-            last_click_key = f"last_click:{ip}"
-            last_click = redis_client.get(last_click_key)
-            
-            if last_click:
-                time_diff = time.time() - float(last_click)
-                if time_diff < 2:  # 2 saniyeden kısa sürede tekrar tıklama
-                    return True
-                    
-            redis_client.set(last_click_key, time.time(), ex=3600)
-            return False
-        except Exception as e:
-            logger.error(f"Bot kontrolü hatası: {str(e)}")
-            return False
+            if redis_client:
+                key = f"clicks:{ip}"
+                if campaign_id:
+                    key += f":{campaign_id}"
+                redis_client.incr(key)
+                redis_client.expire(key, 3600)
+            else:
+                key = f"{ip}:{campaign_id}" if campaign_id else ip
+                self.memory_storage[key] = self.memory_storage.get(key, 0) + 1
+        except:
+            key = f"{ip}:{campaign_id}" if campaign_id else ip
+            self.memory_storage[key] = self.memory_storage.get(key, 0) + 1
 
     def check_click(self, ip, campaign_id, user_agent):
         """Tıklama kontrolü"""
         try:
-            # Bot kontrolü
-            if self.is_bot_activity(user_agent, ip):
-                logger.warning(f"Bot aktivitesi tespit edildi: {ip}")
-                return False, "Bot aktivitesi tespit edildi"
-
             # Tıklama sayısı kontrolü
             click_count = self.get_click_count(ip, campaign_id)
+            logger.info(f"IP: {ip}, Tıklama sayısı: {click_count}")
             
-            if click_count >= 5:  # 1 saatte en fazla 5 tıklama
+            if click_count >= 2:  # 2'den fazla tıklamada engelle
                 logger.warning(f"IP limit aşımı: {ip}")
                 return False, "IP limiti aşıldı"
 
@@ -148,46 +127,22 @@ def index():
 
         # Tıklama kontrolü
         is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
+        logger.info(f"Kontrol sonucu: {is_valid}, {reason}")
 
         if not is_valid:
-            # Bot sayfasına yönlendir
             return render_template('bot-saldirisi.html')
 
-        # Google Ads parametrelerini ekleyerek yönlendir
         target_url = f'https://servisimonline.com/?gclid={gclid}&utm_source=google&utm_medium=cpc&utm_campaign={campaign_id}'
         return redirect(target_url)
 
     except Exception as e:
         logger.error(f"Ana sayfa hatası: {str(e)}")
-        return redirect('https://servisimonline.com/bot-saldirisi.html')
+        return render_template('bot-saldirisi.html')
 
 @app.route('/bot-saldirisi.html')
 def bot_page():
     """Bot sayfası"""
     return render_template('bot-saldirisi.html')
-
-@app.route('/check-click', methods=['POST'])
-def check_click():
-    """AJAX ile tıklama kontrolü"""
-    try:
-        data = request.get_json()
-        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
-        campaign_id = data.get('campaign_id', 'default')
-        user_agent = request.headers.get('User-Agent', '')
-
-        is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
-        
-        return jsonify({
-            'success': True,
-            'is_valid': is_valid,
-            'reason': reason
-        })
-    except Exception as e:
-        logger.error(f"Tıklama kontrolü hatası: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
 
 # Global detector instance
 detector = ClickFraudDetector()
