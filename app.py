@@ -24,12 +24,8 @@ app = Flask(__name__)
 CORS(app)
 
 # Redis bağlantısı
-redis_client = redis.Redis(
-    host=os.getenv('REDIS_HOST', 'localhost'),
-    port=int(os.getenv('REDIS_PORT', 6379)),
-    password=os.getenv('REDIS_PASSWORD', None),
-    decode_responses=True
-)
+redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+redis_client = redis.from_url(redis_url, decode_responses=True)
 
 # E-posta yapılandırması
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -62,49 +58,60 @@ class ClickFraudDetector:
         except FileNotFoundError:
             self.geoip_reader = None
             logger.error("GeoLite2 veritabanı bulunamadı")
-    
+
     def get_click_count(self, ip, campaign_id=None):
         """Redis'ten IP için tıklama sayısını al"""
-        key = f"clicks:{ip}"
-        if campaign_id:
-            key += f":{campaign_id}"
-        
-        clicks = redis_client.get(key)
-        return int(clicks) if clicks else 0
+        try:
+            key = f"clicks:{ip}"
+            if campaign_id:
+                key += f":{campaign_id}"
+            
+            clicks = redis_client.get(key)
+            return int(clicks) if clicks else 0
+        except Exception as e:
+            logger.error(f"Redis okuma hatası: {str(e)}")
+            return 0
 
     def increment_click_count(self, ip, campaign_id=None):
         """Redis'te IP için tıklama sayısını artır"""
-        key = f"clicks:{ip}"
-        if campaign_id:
-            key += f":{campaign_id}"
-            
-        # 1 saat geçerli olacak şekilde artır
-        redis_client.incr(key)
-        redis_client.expire(key, 3600)  # 1 saat
+        try:
+            key = f"clicks:{ip}"
+            if campaign_id:
+                key += f":{campaign_id}"
+                
+            # 1 saat geçerli olacak şekilde artır
+            redis_client.incr(key)
+            redis_client.expire(key, 3600)  # 1 saat
+        except Exception as e:
+            logger.error(f"Redis yazma hatası: {str(e)}")
 
     def is_bot_activity(self, user_agent, ip):
         """Bot aktivitesi kontrolü"""
-        if not user_agent:
-            return True
-            
-        user_agent = user_agent.lower()
-        suspicious_terms = ['bot', 'crawler', 'spider', 'http', 'python', 'curl']
-        
-        # User-Agent kontrolü
-        if any(term in user_agent for term in suspicious_terms):
-            return True
-            
-        # Hız kontrolü
-        last_click_key = f"last_click:{ip}"
-        last_click = redis_client.get(last_click_key)
-        
-        if last_click:
-            time_diff = time.time() - float(last_click)
-            if time_diff < 2:  # 2 saniyeden kısa sürede tekrar tıklama
+        try:
+            if not user_agent:
                 return True
                 
-        redis_client.set(last_click_key, time.time(), ex=3600)
-        return False
+            user_agent = user_agent.lower()
+            suspicious_terms = ['bot', 'crawler', 'spider', 'http', 'python', 'curl']
+            
+            # User-Agent kontrolü
+            if any(term in user_agent for term in suspicious_terms):
+                return True
+                
+            # Hız kontrolü
+            last_click_key = f"last_click:{ip}"
+            last_click = redis_client.get(last_click_key)
+            
+            if last_click:
+                time_diff = time.time() - float(last_click)
+                if time_diff < 2:  # 2 saniyeden kısa sürede tekrar tıklama
+                    return True
+                    
+            redis_client.set(last_click_key, time.time(), ex=3600)
+            return False
+        except Exception as e:
+            logger.error(f"Bot kontrolü hatası: {str(e)}")
+            return False
 
     def check_click(self, ip, campaign_id, user_agent):
         """Tıklama kontrolü"""
@@ -133,24 +140,28 @@ class ClickFraudDetector:
 @app.route('/')
 def index():
     """Ana sayfa yönlendirmesi"""
-    gclid = request.args.get('gclid')
-    campaign_id = request.args.get('utm_campaign', 'default')
-    ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
-    user_agent = request.headers.get('User-Agent', '')
+    try:
+        gclid = request.args.get('gclid')
+        campaign_id = request.args.get('utm_campaign', 'default')
+        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
+        user_agent = request.headers.get('User-Agent', '')
 
-    # Tıklama kontrolü
-    is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
+        # Tıklama kontrolü
+        is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
 
-    if not is_valid:
-        return redirect('https://servisimonline.com/bot-saldirisi.html')
+        if not is_valid:
+            return redirect('https://servisimonline.com/bot-saldirisi.html')
 
-    # Normal sayfa gösterimi
-    return render_template('index.html')
+        # Normal sayfa gösterimi
+        return redirect('https://servisimonline.com/')
+    except Exception as e:
+        logger.error(f"Ana sayfa hatası: {str(e)}")
+        return redirect('https://servisimonline.com/')
 
 @app.route('/bot-saldirisi.html')
 def bot_page():
     """Bot sayfası"""
-    return render_template('bot-saldirisi.html')
+    return redirect('https://servisimonline.com/bot-saldirisi.html')
 
 # Global detector instance
 detector = ClickFraudDetector()
