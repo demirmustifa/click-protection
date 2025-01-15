@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, render_template, send_file
+from flask import Flask, jsonify, request, render_template, send_file, redirect
 from datetime import datetime, timedelta
 import logging
 import json
@@ -17,9 +17,19 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 import geoip2.database
 from geoip2.errors import AddressNotFoundError
 from flask_cors import CORS
+import redis
+import hashlib
 
 app = Flask(__name__)
 CORS(app)
+
+# Redis bağlantısı
+redis_client = redis.Redis(
+    host=os.getenv('REDIS_HOST', 'localhost'),
+    port=int(os.getenv('REDIS_PORT', 6379)),
+    password=os.getenv('REDIS_PASSWORD', None),
+    decode_responses=True
+)
 
 # E-posta yapılandırması
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -38,53 +48,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global değişkenler
-last_activity_time = datetime.now()
-INACTIVITY_THRESHOLD = 600  # 10 dakika
-
-@app.before_request
-def before_request():
-    """Her istekte son aktivite zamanını güncelle"""
-    global last_activity_time
-    last_activity_time = datetime.now()
-
-def keep_alive():
-    """Basit ping servisi"""
-    global last_activity_time
-    
-    while True:
-        try:
-            time.sleep(30)
-            current_time = datetime.now()
-            
-            if (current_time - last_activity_time).total_seconds() >= INACTIVITY_THRESHOLD:
-                try:
-                    requests.head(
-                        "https://click-protection.onrender.com/",
-                        timeout=5,
-                        headers={'User-Agent': 'ClickProtection-Ping/1.0'}
-                    )
-                    last_activity_time = current_time
-                except:
-                    pass
-        except:
-            time.sleep(60)
-
-# Ping servisini başlat
-if os.environ.get('RENDER') == 'true':
-    ping_thread = threading.Thread(target=keep_alive, daemon=True)
-    ping_thread.start()
-    logger.info("Ping servisi başlatıldı")
-
 class ClickFraudDetector:
     def __init__(self):
         self.clicks = deque(maxlen=500)
         self.suspicious_activities = deque(maxlen=50)
-        self.sessions = {}
         self.admin_email = os.getenv('ADMIN_EMAIL')
         self.location_data = []
         self.country_stats = Counter()
-        self.seen_ips = defaultdict(set)  # IP'lerin hangi kampanyalara tıkladığını tutacak
         
         # GeoLite2 veritabanını yükle
         try:
@@ -93,490 +63,94 @@ class ClickFraudDetector:
             self.geoip_reader = None
             logger.error("GeoLite2 veritabanı bulunamadı")
     
-    def should_show_ad(self, ip, campaign_id):
-        """IP'nin bu kampanyayı daha önce görüp görmediğini kontrol et"""
-        return campaign_id not in self.seen_ips[ip]
-    
-    def record_ad_view(self, ip, campaign_id):
-        """IP'nin kampanyayı gördüğünü kaydet"""
-        self.seen_ips[ip].add(campaign_id)
-        return True
-    
-    def get_location_from_ip(self, ip):
-        """IP adresinden konum bilgisi alma"""
-        try:
-            if self.geoip_reader and ip != 'unknown':
-                response = self.geoip_reader.city(ip)
-                location = {
-                    'ip': ip,
-                    'country': response.country.name,
-                    'city': response.city.name,
-                    'latitude': response.location.latitude,
-                    'longitude': response.location.longitude,
-                    'risk_score': 0  # Risk skoru başlangıçta 0
-                }
-                return location
-        except AddressNotFoundError:
-            logger.warning(f"IP adresi bulunamadı: {ip}")
-        except Exception as e:
-            logger.error(f"Konum tespiti hatası: {str(e)}")
+    def get_click_count(self, ip, campaign_id=None):
+        """Redis'ten IP için tıklama sayısını al"""
+        key = f"clicks:{ip}"
+        if campaign_id:
+            key += f":{campaign_id}"
         
-        return {
-            'ip': ip,
-            'country': 'Unknown',
-            'city': 'Unknown',
-            'latitude': 0,
-            'longitude': 0,
-            'risk_score': 0
-        }
-    
-    def send_alert_email(self, subject, body):
-        """Şüpheli aktivite e-posta bildirimi"""
-        try:
-            if self.admin_email:
-                msg = Message(
-                    subject,
-                    recipients=[self.admin_email],
-                    body=body
-                )
-                mail.send(msg)
-                logger.info(f"Alert email sent: {subject}")
-        except Exception as e:
-            logger.error(f"Email sending error: {str(e)}")
-    
-    def record_click(self, click_data):
-        """Tıklama kaydı ve konum analizi"""
-        try:
-            current_time = datetime.now()
-            ip = click_data.get('ip', 'unknown')
-            campaign_id = click_data.get('campaign_id', 'unknown')
+        clicks = redis_client.get(key)
+        return int(clicks) if clicks else 0
+
+    def increment_click_count(self, ip, campaign_id=None):
+        """Redis'te IP için tıklama sayısını artır"""
+        key = f"clicks:{ip}"
+        if campaign_id:
+            key += f":{campaign_id}"
             
-            # Bu IP bu kampanyayı daha önce görmüş mü kontrol et
-            if not self.should_show_ad(ip, campaign_id):
-                logger.info(f"IP {ip} daha önce kampanya {campaign_id}'yi görmüş, reklam gösterilmeyecek")
-                return {
-                    'success': False,
-                    'show_ad': False,
-                    'reason': 'IP daha önce bu reklamı görmüş'
-                }
+        # 1 saat geçerli olacak şekilde artır
+        redis_client.incr(key)
+        redis_client.expire(key, 3600)  # 1 saat
+
+    def is_bot_activity(self, user_agent, ip):
+        """Bot aktivitesi kontrolü"""
+        if not user_agent:
+            return True
             
-            # IP'nin bu kampanyayı gördüğünü kaydet
-            self.record_ad_view(ip, campaign_id)
-            
-            # Mevcut tıklama işlemleri...
-            location = self.get_location_from_ip(ip)
-            click_data['location'] = location
-            
-            if location['country'] != 'Unknown':
-                self.country_stats[location['country']] += 1
-            
-            risk_score = 0
-            if location['country'] in ['Unknown', None]:
-                risk_score += 50
-            
-            high_risk_countries = ['CountryA', 'CountryB']
-            if location['country'] in high_risk_countries:
-                risk_score += 30
-            
-            location['risk_score'] = risk_score
-            
-            self.location_data.append({
-                'timestamp': current_time,
-                'location': location,
-                'risk_score': risk_score
-            })
-            
-            session_key = f"{ip}_{campaign_id}"
-            
-            if session_key not in self.sessions:
-                self.sessions[session_key] = {
-                    'first_click': current_time,
-                    'click_count': 0,
-                    'quick_exits': 0,
-                    'country': location['country']
-                }
-            
-            session = self.sessions[session_key]
-            
-            if 'last_click' in session:
-                time_diff = (current_time - session['last_click']).total_seconds()
-                if time_diff < 3:
-                    session['quick_exits'] += 1
-                    risk_score += 20
-                    if session['quick_exits'] >= 5:
-                        self._record_suspicious(click_data, "Çok sayıda hızlı çıkış")
-                        self.send_alert_email(
-                            "Şüpheli Aktivite Tespit Edildi",
-                            f"IP: {ip}\nÜlke: {location['country']}\nŞehir: {location['city']}\nNeden: Çok sayıda hızlı çıkış\nZaman: {current_time}"
-                        )
-            
-            if self._is_bot(click_data.get('user_agent', '')):
-                risk_score += 40
-                self._record_suspicious(click_data, "Bot aktivitesi")
-                self.send_alert_email(
-                    "Bot Aktivitesi Tespit Edildi",
-                    f"IP: {ip}\nÜlke: {location['country']}\nŞehir: {location['city']}\nUser-Agent: {click_data.get('user_agent')}\nZaman: {current_time}"
-                )
-            
-            session['last_click'] = current_time
-            session['click_count'] = min(session['click_count'] + 1, 100)
-            
-            click_data['timestamp'] = current_time
-            click_data['risk_score'] = risk_score
-            self.clicks.append(click_data)
-            
-            return {
-                'success': True,
-                'show_ad': True,
-                'risk_score': risk_score
-            }
-            
-        except Exception as e:
-            logger.error(f"Tıklama kaydı hatası: {str(e)}")
-            return {
-                'success': False,
-                'show_ad': False,
-                'reason': 'Sistem hatası'
-            }
-    
-    def _is_bot(self, user_agent):
-        """Basit bot kontrolü"""
         user_agent = user_agent.lower()
-        return any(x in user_agent for x in ['bot', 'crawler', 'spider'])
-    
-    def _record_suspicious(self, click_data, reason):
-        """Şüpheli aktivite kaydı"""
-        self.suspicious_activities.append({
-            'timestamp': datetime.now(),
-            'ip': click_data.get('ip'),
-            'reason': reason
-        })
-    
-    def get_stats(self):
-        """Basit istatistikler"""
-        suspicious_count = len(self.suspicious_activities)
-        total_clicks = len(self.clicks)
-        return {
-            'total_clicks': total_clicks,
-            'suspicious_clicks': suspicious_count,
-            'session_count': len(self.sessions)
-        }
-    
-    def get_quick_exit_report(self):
-        """Hızlı çıkış raporu"""
-        report = {
-            'total_sessions': len(self.sessions),
-            'suspicious_sessions': sum(1 for s in self.sessions.values() if s.get('quick_exits', 0) >= 5),
-            'quick_exits_total': sum(s.get('quick_exits', 0) for s in self.sessions.values())
-        }
-        return report
-    
-    def generate_excel_report(self):
-        """Excel raporu oluşturma"""
-        try:
-            df = pd.DataFrame(list(self.clicks))
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, sheet_name='Tıklama Verileri', index=False)
-            output.seek(0)
-            return output
-        except Exception as e:
-            logger.error(f"Excel rapor oluşturma hatası: {str(e)}")
-            return None
-    
-    def generate_pdf_report(self):
-        """PDF raporu oluşturma"""
-        try:
-            buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=letter)
-            elements = []
-
-            # İstatistikler
-            stats = self.get_stats()
-            data = [
-                ['Metrik', 'Değer'],
-                ['Toplam Tıklama', stats['total_clicks']],
-                ['Şüpheli Tıklama', stats['suspicious_clicks']],
-                ['Oturum Sayısı', stats['session_count']]
-            ]
-
-            table = Table(data)
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 14),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 1), (-1, -1), 12),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
-            ]))
+        suspicious_terms = ['bot', 'crawler', 'spider', 'http', 'python', 'curl']
+        
+        # User-Agent kontrolü
+        if any(term in user_agent for term in suspicious_terms):
+            return True
             
-            elements.append(table)
-            doc.build(elements)
-            buffer.seek(0)
-            return buffer
-        except Exception as e:
-            logger.error(f"PDF rapor oluşturma hatası: {str(e)}")
-            return None
-    
-    def get_location_stats(self):
-        """Konum istatistiklerini getir"""
+        # Hız kontrolü
+        last_click_key = f"last_click:{ip}"
+        last_click = redis_client.get(last_click_key)
+        
+        if last_click:
+            time_diff = time.time() - float(last_click)
+            if time_diff < 2:  # 2 saniyeden kısa sürede tekrar tıklama
+                return True
+                
+        redis_client.set(last_click_key, time.time(), ex=3600)
+        return False
+
+    def check_click(self, ip, campaign_id, user_agent):
+        """Tıklama kontrolü"""
         try:
-            stats = {
-                'country_stats': dict(self.country_stats),
-                'recent_locations': [
-                    {
-                        'latitude': loc['location']['latitude'],
-                        'longitude': loc['location']['longitude'],
-                        'risk_score': loc['risk_score'],
-                        'country': loc['location']['country'],
-                        'city': loc['location']['city']
-                    }
-                    for loc in self.location_data[-100:]  # Son 100 konum
-                ],
-                'high_risk_locations': [
-                    {
-                        'latitude': loc['location']['latitude'],
-                        'longitude': loc['location']['longitude'],
-                        'risk_score': loc['risk_score'],
-                        'country': loc['location']['country'],
-                        'city': loc['location']['city']
-                    }
-                    for loc in self.location_data
-                    if loc['risk_score'] > 50  # Yüksek riskli lokasyonlar
-                ]
-            }
-            return stats
+            # Bot kontrolü
+            if self.is_bot_activity(user_agent, ip):
+                logger.warning(f"Bot aktivitesi tespit edildi: {ip}")
+                return False, "Bot aktivitesi tespit edildi"
+
+            # Tıklama sayısı kontrolü
+            click_count = self.get_click_count(ip, campaign_id)
+            
+            if click_count >= 5:  # 1 saatte en fazla 5 tıklama
+                logger.warning(f"IP limit aşımı: {ip}")
+                return False, "IP limiti aşıldı"
+
+            # Tıklama sayısını artır
+            self.increment_click_count(ip, campaign_id)
+            
+            return True, "OK"
+            
         except Exception as e:
-            logger.error(f"Konum istatistikleri hatası: {str(e)}")
-            return {}
-    
-    def reset_ips(self):
-        """Tüm IP kayıtlarını sıfırla"""
-        self.seen_ips = {}
-        self.location_data = []
-        self.country_stats = defaultdict(int)
-        logger.info("Tüm IP kayıtları sıfırlandı")
+            logger.error(f"Tıklama kontrolü hatası: {str(e)}")
+            return True, "Hata durumunda izin ver"
+
+@app.route('/')
+def index():
+    """Ana sayfa yönlendirmesi"""
+    gclid = request.args.get('gclid')
+    campaign_id = request.args.get('utm_campaign', 'default')
+    ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
+    user_agent = request.headers.get('User-Agent', '')
+
+    # Tıklama kontrolü
+    is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
+
+    if not is_valid:
+        return redirect('https://servisimonline.com/bot-saldirisi.html')
+
+    # Normal sayfa gösterimi
+    return render_template('index.html')
+
+@app.route('/bot-saldirisi.html')
+def bot_page():
+    """Bot sayfası"""
+    return render_template('bot-saldirisi.html')
 
 # Global detector instance
 detector = ClickFraudDetector()
-
-# Her başlangıçta IP'leri sıfırla
-detector.reset_ips()
-
-@app.route('/')
-def dashboard():
-    return render_template('dashboard.html')
-
-@app.route('/check-ad-visibility', methods=['GET', 'POST'])
-def check_ad_visibility():
-    """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
-    try:
-        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
-        app.logger.info(f"Gelen IP: {ip}")
-        
-        # IP'nin görüntüleme sayısını kontrol et
-        if ip not in detector.seen_ips:
-            detector.seen_ips[ip] = []
-            click_count = 0
-            app.logger.info(f"Yeni IP ilk ziyaret: {ip}")
-            
-            # Yeni IP için konum bilgilerini kaydet
-            location = detector.get_location_from_ip(ip)
-            detector.location_data.append({
-                'timestamp': datetime.now(),
-                'location': location,
-                'risk_score': 0
-            })
-            
-            if location['country'] != 'Unknown':
-                detector.country_stats[location['country']] += 1
-            
-            return jsonify({
-                'show_ad': True,
-                'reason': 'İlk ziyaret',
-                'click_count': 0,
-                'gclid': request.args.get('gclid', '')
-            })
-            
-        # Son 1 saat içindeki görüntülemeleri say
-        current_time = datetime.now()
-        detector.seen_ips[ip] = [t for t in detector.seen_ips[ip] 
-                               if (current_time - t).total_seconds() < 3600]  # 1 saat
-        click_count = len(detector.seen_ips[ip])
-        app.logger.info(f"Mevcut IP görüntüleme: {ip}, sayı: {click_count}")
-        
-        # IP limiti kontrolü (5'den fazla görüntülemede engelle)
-        if click_count >= 5:  # Limiti artırdık
-            # Google Ads'e geçersiz tıklama bildirimi
-            gclid = request.args.get('gclid', '')
-            if gclid:
-                try:
-                    requests.post('https://www.google.com/ads/conversion/invalid', 
-                                data={'gclid': gclid, 'reason': 'suspicious_activity'})
-                except:
-                    pass
-                    
-            return jsonify({
-                'show_ad': False,
-                'redirect': 'https://servisimonline.com/bot-saldirisi.html',
-                'reason': 'IP limiti aşıldı',
-                'click_count': click_count,
-                'invalid_click': True
-            })
-        
-        # Görüntüleme zamanını kaydet
-        detector.seen_ips[ip].append(current_time)
-        
-        # Konum bilgilerini güncelle
-        location = detector.get_location_from_ip(ip)
-        risk_score = click_count * 20  # Risk skorunu düşürdük
-        
-        # Bot veya şüpheli aktivite kontrolü
-        user_agent = request.headers.get('User-Agent', '').lower()
-        if any(bot in user_agent for bot in ['bot', 'crawler', 'spider', 'http', 'python']):
-            # Google Ads'e geçersiz tıklama bildirimi
-            gclid = request.args.get('gclid', '')
-            if gclid:
-                try:
-                    requests.post('https://www.google.com/ads/conversion/invalid', 
-                                data={'gclid': gclid, 'reason': 'bot_activity'})
-                except:
-                    pass
-                    
-            return jsonify({
-                'show_ad': False,
-                'redirect': 'https://servisimonline.com/bot-saldirisi.html',
-                'reason': 'Bot aktivitesi tespit edildi',
-                'invalid_click': True
-            })
-        
-        detector.location_data.append({
-            'timestamp': datetime.now(),
-            'location': location,
-            'risk_score': risk_score
-        })
-        
-        if location['country'] != 'Unknown':
-            detector.country_stats[location['country']] += 1
-        
-        return jsonify({
-            'show_ad': True,
-            'reason': f'{click_count + 1}. gösterim',
-            'click_count': click_count + 1,
-            'gclid': request.args.get('gclid', '')
-        })
-    except Exception as e:
-        logger.error(f"Kontrol hatası: {str(e)}")
-        return jsonify({
-            'show_ad': True,
-            'reason': 'Hata durumunda göster'
-        })
-
-@app.route('/record-click', methods=['POST'])
-def record_click():
-    """Tıklama kaydı ve reklam gösterim kontrolü"""
-    result = detector.record_click(request.json)
-    return jsonify(result)
-
-@app.route('/api/stats')
-def get_stats():
-    return jsonify(detector.get_stats())
-
-@app.route('/api/quick-exit-report')
-def get_quick_exit_report():
-    return jsonify(detector.get_quick_exit_report())
-
-@app.route('/api/suspicious-activities')
-def get_suspicious_activities():
-    return jsonify(list(detector.suspicious_activities))
-
-@app.route('/api/location-stats')
-def get_location_stats():
-    """Konum istatistiklerini döndür"""
-    return jsonify(detector.get_location_stats())
-
-@app.route('/download-excel')
-def download_excel():
-    """Excel raporu indirme"""
-    output = detector.generate_excel_report()
-    if output:
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f'click_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-        )
-    return jsonify({'error': 'Rapor oluşturulamadı'}), 500
-
-@app.route('/download-pdf')
-def download_pdf():
-    """PDF raporu indirme"""
-    buffer = detector.generate_pdf_report()
-    if buffer:
-        return send_file(
-            buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f'click_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
-        )
-    return jsonify({'error': 'Rapor oluşturulamadı'}), 500
-
-@app.route('/reset-ips', methods=['POST'])
-def reset_ips():
-    """IP kayıtlarını sıfırla"""
-    try:
-        detector.reset_ips()
-        return jsonify({
-            'success': True,
-            'message': 'IP kayıtları sıfırlandı'
-        })
-    except Exception as e:
-        logger.error(f"Sıfırlama hatası: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': 'Hata oluştu'
-        }), 500
-
-@app.route('/pre-check-ad', methods=['POST'])
-def pre_check_ad():
-    """Reklama tıklamadan önce kontrol et"""
-    try:
-        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
-        
-        # IP'nin görüntüleme sayısını kontrol et
-        if ip not in detector.seen_ips:
-            return jsonify({
-                'allow_click': True,
-                'message': 'İlk ziyaret'
-            })
-        
-        click_count = len(detector.seen_ips[ip])
-        
-        # 1'den fazla görüntülemede engelle
-        if click_count >= 1:
-            logger.warning(f"Reklam tıklaması engellendi: {ip}")
-            return jsonify({
-                'allow_click': False,
-                'redirect': 'https://servisimonline.com/bot-saldirisi.html',
-                'message': 'Çok fazla tıklama'
-            })
-            
-        return jsonify({
-            'allow_click': True,
-            'message': 'Tıklamaya izin verildi'
-        })
-        
-    except Exception as e:
-        logger.error(f"Ön kontrol hatası: {str(e)}")
-        return jsonify({
-            'allow_click': True,
-            'message': 'Hata durumunda izin ver'
-        })
-
-if __name__ == '__main__':
-    app.run(debug=True) 

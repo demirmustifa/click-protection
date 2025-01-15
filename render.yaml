@@ -6,3 +6,23 @@ services:
       pip install -r requirements.txt
       curl -o GeoLite2-City.mmdb https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-City.mmdb
     startCommand: gunicorn app:app
+    envVars:
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: click-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: click-redis
+          property: port
+      - key: REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: click-redis
+          property: password
+
+  - type: redis
+    name: click-redis
+    ipAllowList: []
