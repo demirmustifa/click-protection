@@ -1,121 +1,93 @@
-# Click Protection - Tıklama Dolandırıcılığı Koruma Sistemi
+# Click Protection Sistemi
 
-## Proje Hakkında
-Click Protection, reklam kampanyalarınızı tıklama dolandırıcılığından korumak için geliştirilmiş kapsamlı bir koruma sistemidir. Sistem, şüpheli tıklama aktivitelerini gerçek zamanlı olarak tespit eder, analiz eder ve raporlar.
+Bu sistem, Google Ads reklamlarınızı bot saldırılarından ve sahte tıklamalardan korumak için geliştirilmiş bir koruma sistemidir.
 
-## Temel Özellikler
+## Sistem Nasıl Çalışır?
 
-### 1. Tıklama Analizi ve Koruma
-- IP tabanlı tıklama takibi
-- Oturum bazlı analiz
-- Hızlı çıkış tespiti
-- Bot aktivitesi kontrolü
-- Risk skoru hesaplama
+1. Google Ads reklamları click-protection.onrender.com üzerinden yönlendirilir
+2. Her tıklama için şu kontroller yapılır:
+   - IP bazlı limit kontrolü (24 saat içinde max 5 tıklama)
+   - Hız kontrolü (1 dakika içinde max 2 tıklama)
+   - Bot kontrolü (User-Agent analizi)
+   - GCLID doğrulaması
+3. Geçerli tıklamalar servisimonline.com'a yönlendirilir
+4. Geçersiz tıklamalar engellenir
 
-### 2. Coğrafi Konum Analizi
-- IP'den konum tespiti
-- Dünya haritası üzerinde görselleştirme
-- Ülke bazlı tıklama istatistikleri
-- Risk bölgelerinin tespiti
-- Şüpheli lokasyon analizi
+## Sistemin Artıları
 
-### 3. Gerçek Zamanlı İzleme
-- Anlık tıklama takibi
-- Canlı dashboard görünümü
-- 30 saniyede bir otomatik güncelleme
-- Şüpheli aktivite uyarıları
+1. **Bot Koruması**:
+   - Bilinen bot türlerini otomatik engeller
+   - Şüpheli IP'leri tespit eder
+   - Hızlı/tekrarlı tıklamaları engeller
 
-### 4. Bildirim Sistemi
-- E-posta bildirimleri
-- Şüpheli aktivite uyarıları
-- Bot tespiti bildirimleri
-- Hızlı çıkış uyarıları
+2. **Tıklama Limitleri**:
+   - IP başına günlük limit (5 tıklama)
+   - Dakika bazlı hız limiti (2 tıklama)
+   - Kampanya bazlı takip
 
-### 5. Raporlama
-- Excel raporu indirme
-- PDF raporu indirme
-- Detaylı istatistikler
-- Ülke bazlı raporlar
+3. **İzleme ve Raporlama**:
+   - Detaylı dashboard
+   - Ülke bazlı istatistikler
+   - IP bazlı tıklama kayıtları
+   - Log sistemi
 
-## Teknik Özellikler
-- Flask web framework
-- GeoIP2 konum veritabanı
-- Leaflet.js harita görselleştirmesi
-- Bootstrap 5 arayüz tasarımı
-- Responsive dashboard
+4. **Güvenlik**:
+   - CORS koruması
+   - Redis veya memory storage desteği
+   - IP proxy tespiti
+
+## Sistemin Eksikleri/Geliştirilebilecek Yönler
+
+1. **Gelişmiş Bot Tespiti**:
+   - JavaScript tabanlı bot tespiti eklenebilir
+   - Fingerprint kontrolü eklenebilir
+   - reCAPTCHA entegrasyonu yapılabilir
+
+2. **Performans**:
+   - CDN desteği eklenebilir
+   - Önbellek sistemi geliştirilebilir
+   - Yük dengeleme eklenebilir
+
+3. **Raporlama**:
+   - E-posta raporları eklenebilir
+   - Daha detaylı analitik eklenebilir
+   - PDF rapor çıktısı eklenebilir
+
+4. **Güvenlik**:
+   - SSL sertifikası zorunlu hale getirilebilir
+   - IP whitelist/blacklist sistemi eklenebilir
+   - DDoS koruması eklenebilir
 
 ## Kurulum
 
-1. Gereksinimleri yükleyin:
-```bash
-pip install -r requirements.txt
+1. Google Ads reklamlarınızın hedef URL'lerini şu formatta güncelleyin:
+```
+https://click-protection.onrender.com/?gclid={gclid}&utm_source=google&utm_medium=cpc&utm_campaign=KAMPANYA_ADI
 ```
 
-2. Environment değişkenlerini ayarlayın (.env dosyası):
-```
-MAIL_SERVER=smtp.gmail.com
-MAIL_PORT=587
-MAIL_USERNAME=your-email@gmail.com
-MAIL_PASSWORD=your-app-password
-MAIL_DEFAULT_SENDER=your-email@gmail.com
-ADMIN_EMAIL=your-email@gmail.com
-```
+2. Sistem otomatik olarak çalışmaya başlayacaktır.
 
-3. GeoLite2 veritabanını indirin ve projenin kök dizinine yerleştirin:
-- GeoLite2-City.mmdb dosyasını MaxMind'dan indirin
-- Projenin ana dizinine kopyalayın
+## Dashboard
 
-4. Uygulamayı başlatın:
-```bash
-python app.py
+Dashboard'a erişmek için:
+```
+https://click-protection.onrender.com/dashboard
 ```
 
-## API Kullanımı
+## Öneriler
 
-### Tıklama Kaydı
-```bash
-POST /record-click
-Content-Type: application/json
+1. CloudFlare gibi bir CDN kullanılabilir
+2. Düzenli yedekleme sistemi kurulabilir
+3. IP veritabanı güncel tutulmalı
+4. Loglar düzenli kontrol edilmeli
 
-{
-    "ip": "192.168.1.1",
-    "user_agent": "Mozilla/5.0...",
-    "campaign_id": "campaign_123"
-}
-```
+## Teknik Detaylar
 
-### İstatistikler
-```bash
-GET /api/stats
-GET /api/location-stats
-GET /api/quick-exit-report
-GET /api/suspicious-activities
-```
+- Python/Flask ile geliştirildi
+- Redis veya memory storage kullanır
+- Render.com üzerinde host ediliyor
+- GeoIP veritabanı kullanıyor
 
-### Raporlar
-```bash
-GET /download-excel
-GET /download-pdf
-```
+## Destek
 
-## Güvenlik Özellikleri
-- IP reputation kontrolü
-- Bot davranış analizi
-- Hızlı çıkış tespiti
-- Coğrafi konum risk analizi
-- Şüpheli aktivite kaydı
-
-## Kullanım Senaryoları
-1. **Reklam Kampanyaları**: PPC kampanyalarınızı sahte tıklamalardan koruyun
-2. **Web Siteleri**: Trafik kalitesini analiz edin
-3. **E-ticaret**: Şüpheli kullanıcı davranışlarını tespit edin
-4. **Analytics**: Gerçek trafik verilerinizi doğru analiz edin
-
-## Planlanan Geliştirmeler
-1. Gelişmiş bot tespiti
-2. Makine öğrenmesi entegrasyonu
-3. İki faktörlü kimlik doğrulama
-4. Mobil uygulama desteği
-
-## Lisans
-Bu proje MIT lisansı altında lisanslanmıştır. 
+Sorun veya önerileriniz için iletişime geçebilirsiniz. 

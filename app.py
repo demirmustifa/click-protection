@@ -225,7 +225,12 @@ def dashboard():
         )
     except Exception as e:
         logger.error(f"Dashboard hatası: {str(e)}")
-        return render_template('dashboard.html', error=str(e))
+        return f"Dashboard hatası: {str(e)}", 500  # Hatayı göster
+
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Statik dosyaları serve et"""
+    return send_file(f'static/{filename}')
 
 # Global detector instance
 detector = ClickFraudDetector()
