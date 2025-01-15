@@ -68,7 +68,8 @@ class ClickFraudDetector:
         self.admin_email = os.getenv('ADMIN_EMAIL')
         self.location_data = []
         self.country_stats = Counter()
-        self.memory_storage = {}  # Redis çalışmazsa memory'de tut
+        self.memory_storage = {}
+        self.click_timestamps = defaultdict(list)  # IP bazlı timestamp takibi
         
     def get_click_count(self, ip, campaign_id=None):
         """IP için tıklama sayısını al"""
@@ -81,45 +82,68 @@ class ClickFraudDetector:
                 return int(clicks) if clicks else 0
             else:
                 key = f"{ip}:{campaign_id}" if campaign_id else ip
-                return self.memory_storage.get(key, 0)
-        except:
-            return self.memory_storage.get(ip, 0)
-
-    def increment_click_count(self, ip, campaign_id=None):
-        """IP için tıklama sayısını artır"""
-        try:
-            if redis_client:
-                key = f"clicks:{ip}"
-                if campaign_id:
-                    key += f":{campaign_id}"
-                redis_client.incr(key)
-                redis_client.expire(key, 3600)
-            else:
-                key = f"{ip}:{campaign_id}" if campaign_id else ip
-                self.memory_storage[key] = self.memory_storage.get(key, 0) + 1
+                return len(self.click_timestamps[key])
         except:
             key = f"{ip}:{campaign_id}" if campaign_id else ip
-            self.memory_storage[key] = self.memory_storage.get(key, 0) + 1
+            return len(self.click_timestamps[key])
+
+    def increment_click_count(self, ip, campaign_id=None):
+        """IP için tıklama sayısını artır ve timestamp'i kaydet"""
+        try:
+            current_time = time.time()
+            key = f"{ip}:{campaign_id}" if campaign_id else ip
+            
+            # Son 1 saatlik tıklamaları tut
+            self.click_timestamps[key] = [ts for ts in self.click_timestamps[key] 
+                                        if current_time - ts < 3600]
+            self.click_timestamps[key].append(current_time)
+            
+            if redis_client:
+                redis_key = f"clicks:{key}"
+                redis_client.incr(redis_key)
+                redis_client.expire(redis_key, 3600)
+        except Exception as e:
+            logger.error(f"Tıklama artırma hatası: {str(e)}")
 
     def check_click(self, ip, campaign_id, user_agent):
-        """Tıklama kontrolü"""
+        """Gelişmiş tıklama kontrolü"""
         try:
-            # Tıklama sayısı kontrolü
-            click_count = self.get_click_count(ip, campaign_id)
-            logger.info(f"IP: {ip}, Tıklama sayısı: {click_count}")
+            current_time = time.time()
+            key = f"{ip}:{campaign_id}" if campaign_id else ip
             
-            if click_count >= 2:  # 2'den fazla tıklamada engelle
+            # Son 1 saatteki tıklamaları temizle
+            self.click_timestamps[key] = [ts for ts in self.click_timestamps[key] 
+                                        if current_time - ts < 3600]
+            
+            # Toplam tıklama sayısı kontrolü
+            click_count = len(self.click_timestamps[key])
+            
+            # Son 10 saniyedeki tıklama sayısı
+            recent_clicks = len([ts for ts in self.click_timestamps[key] 
+                               if current_time - ts < 10])
+            
+            logger.info(f"IP: {ip}, Toplam tıklama: {click_count}, Son 10sn: {recent_clicks}")
+            
+            # Bot kontrolü kuralları
+            if click_count >= 2:  # Toplam limit
                 logger.warning(f"IP limit aşımı: {ip}")
                 return False, "IP limiti aşıldı"
-
+                
+            if recent_clicks >= 2:  # Hız limiti
+                logger.warning(f"Hız limiti aşımı: {ip}")
+                return False, "Çok hızlı tıklama"
+                
+            if not user_agent or 'bot' in user_agent.lower():
+                logger.warning(f"Bot tespiti: {ip}")
+                return False, "Bot tespit edildi"
+            
             # Tıklama sayısını artır
             self.increment_click_count(ip, campaign_id)
-            
             return True, "OK"
             
         except Exception as e:
             logger.error(f"Tıklama kontrolü hatası: {str(e)}")
-            return True, "Hata durumunda izin ver"
+            return False, "Sistem hatası"
 
 @app.route('/')
 def index():
@@ -127,7 +151,9 @@ def index():
     try:
         gclid = request.args.get('gclid')
         campaign_id = request.args.get('utm_campaign', 'default')
-        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if ip and ',' in ip:
+            ip = ip.split(',')[0].strip()
         user_agent = request.headers.get('User-Agent', '')
 
         # Tıklama kontrolü
@@ -135,6 +161,9 @@ def index():
         logger.info(f"Kontrol sonucu: {is_valid}, {reason}")
 
         if not is_valid:
+            return render_template('bot-saldirisi.html')
+
+        if not gclid:
             return render_template('bot-saldirisi.html')
 
         target_url = f'https://servisimonline.com/?gclid={gclid}&utm_source=google&utm_medium=cpc&utm_campaign={campaign_id}'
