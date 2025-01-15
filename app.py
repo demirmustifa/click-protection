@@ -372,7 +372,7 @@ detector.reset_ips()
 def dashboard():
     return render_template('dashboard.html')
 
-@app.route('/check-ad-visibility', methods=['POST'])
+@app.route('/check-ad-visibility', methods=['GET', 'POST'])
 def check_ad_visibility():
     """Reklamın gösterilip gösterilmeyeceğini kontrol et"""
     try:
@@ -400,18 +400,18 @@ def check_ad_visibility():
                 'show_ad': True,
                 'reason': 'İlk ziyaret',
                 'click_count': 0,
-                'gclid': request.args.get('gclid', '')  # Google Click ID'yi sakla
+                'gclid': request.args.get('gclid', '')
             })
             
-        # Son 24 saat içindeki görüntülemeleri say
+        # Son 1 saat içindeki görüntülemeleri say
         current_time = datetime.now()
         detector.seen_ips[ip] = [t for t in detector.seen_ips[ip] 
-                               if (current_time - t).total_seconds() < 24 * 3600]
+                               if (current_time - t).total_seconds() < 3600]  # 1 saat
         click_count = len(detector.seen_ips[ip])
         app.logger.info(f"Mevcut IP görüntüleme: {ip}, sayı: {click_count}")
         
-        # IP limiti kontrolü (2'den fazla görüntülemede engelle)
-        if click_count >= 2:
+        # IP limiti kontrolü (5'den fazla görüntülemede engelle)
+        if click_count >= 5:  # Limiti artırdık
             # Google Ads'e geçersiz tıklama bildirimi
             gclid = request.args.get('gclid', '')
             if gclid:
@@ -430,15 +430,15 @@ def check_ad_visibility():
             })
         
         # Görüntüleme zamanını kaydet
-        detector.seen_ips[ip].append(datetime.now())
+        detector.seen_ips[ip].append(current_time)
         
         # Konum bilgilerini güncelle
         location = detector.get_location_from_ip(ip)
-        risk_score = click_count * 25
+        risk_score = click_count * 20  # Risk skorunu düşürdük
         
         # Bot veya şüpheli aktivite kontrolü
         user_agent = request.headers.get('User-Agent', '').lower()
-        if 'bot' in user_agent or 'crawler' in user_agent or 'spider' in user_agent:
+        if any(bot in user_agent for bot in ['bot', 'crawler', 'spider', 'http', 'python']):
             # Google Ads'e geçersiz tıklama bildirimi
             gclid = request.args.get('gclid', '')
             if gclid:
