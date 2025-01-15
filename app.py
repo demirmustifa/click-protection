@@ -150,18 +150,44 @@ def index():
         is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
 
         if not is_valid:
-            return redirect('https://servisimonline.com/bot-saldirisi.html')
+            # Bot sayfasına yönlendir
+            return render_template('bot-saldirisi.html')
 
-        # Normal sayfa gösterimi
-        return redirect('https://servisimonline.com/')
+        # Google Ads parametrelerini ekleyerek yönlendir
+        target_url = f'https://servisimonline.com/?gclid={gclid}&utm_source=google&utm_medium=cpc&utm_campaign={campaign_id}'
+        return redirect(target_url)
+
     except Exception as e:
         logger.error(f"Ana sayfa hatası: {str(e)}")
-        return redirect('https://servisimonline.com/')
+        return redirect('https://servisimonline.com/bot-saldirisi.html')
 
 @app.route('/bot-saldirisi.html')
 def bot_page():
     """Bot sayfası"""
-    return redirect('https://servisimonline.com/bot-saldirisi.html')
+    return render_template('bot-saldirisi.html')
+
+@app.route('/check-click', methods=['POST'])
+def check_click():
+    """AJAX ile tıklama kontrolü"""
+    try:
+        data = request.get_json()
+        ip = request.remote_addr or request.headers.get('X-Forwarded-For', '').split(',')[0]
+        campaign_id = data.get('campaign_id', 'default')
+        user_agent = request.headers.get('User-Agent', '')
+
+        is_valid, reason = detector.check_click(ip, campaign_id, user_agent)
+        
+        return jsonify({
+            'success': True,
+            'is_valid': is_valid,
+            'reason': reason
+        })
+    except Exception as e:
+        logger.error(f"Tıklama kontrolü hatası: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 # Global detector instance
 detector = ClickFraudDetector()
