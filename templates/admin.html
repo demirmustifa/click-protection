@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yönetici Paneli - ServisiMOnline</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css">
+    <style>
+        .navbar {
+            margin-bottom: 2rem;
+        }
+        .stats-card {
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">ServisiMOnline Yönetici Paneli</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('logout') }}">Çıkış Yap</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card stats-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Toplam Ziyaretçi</h5>
+                        <h2 class="card-text">{{ visitors|length }}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card stats-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Bugünkü Ziyaretçi</h5>
+                        <h2 class="card-text">
+                            {{ visitors|selectattr('visit_time', 'day_is', today)|list|length }}
+                        </h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card stats-card">
+                    <div class="card-body">
+                        <h5 class="card-title">Aktif Ziyaretçiler</h5>
+                        <h2 class="card-text">
+                            {{ visitors|selectattr('visit_time', 'time_delta_lt', 300)|list|length }}
+                        </h2>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Ziyaretçi Listesi</h5>
+            </div>
+            <div class="card-body">
+                <table id="visitorsTable" class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>IP Adresi</th>
+                            <th>Konum</th>
+                            <th>Cihaz</th>
+                            <th>Tarayıcı</th>
+                            <th>Ziyaret Sayısı</th>
+                            <th>Son Ziyaret</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for visitor in visitors %}
+                        <tr>
+                            <td>{{ visitor.ip_address }}</td>
+                            <td>{{ visitor.location }}</td>
+                            <td>{{ visitor.device_type }}</td>
+                            <td>{{ visitor.browser }}</td>
+                            <td>{{ visitor.visit_count }}</td>
+                            <td>{{ visitor.visit_time.strftime('%d.%m.%Y %H:%M:%S') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.11.5/js/dataTables.bootstrap5.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            $('#visitorsTable').DataTable({
+                order: [[5, 'desc']],
+                language: {
+                    url: '//cdn.datatables.net/plug-ins/1.11.5/i18n/tr.json'
+                }
+            });
+        });
+    </script>
+</body>
+</html> 
